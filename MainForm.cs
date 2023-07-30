@@ -212,12 +212,14 @@ namespace GrzBeamProfiler
             this.hScrollBarExposure.Minimum = _settings.ExposureMin;
             this.hScrollBarExposure.Maximum = _settings.ExposureMax;
             this.hScrollBarExposure.Value = _settings.Exposure;
+            this.labelCameraExposure.Text = "camera exposure: " + _settings.Exposure.ToString();
             this.toolTip.SetToolTip(this.hScrollBarExposure, "Camera exposure " + _settings.Exposure.ToString() + " (" + this.hScrollBarExposure.Minimum.ToString() + ".." + this.hScrollBarExposure.Maximum.ToString() + ")");
             this.hScrollBarBrightness.Minimum = _settings.BrightnessMin;
             this.hScrollBarBrightness.Maximum = _settings.BrightnessMax;
             this.hScrollBarBrightness.Value = _settings.Brightness;
             this.toolTip.SetToolTip(this.hScrollBarBrightness, "Camera brightness " + _settings.Brightness.ToString() + " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." + this.hScrollBarBrightness.Maximum.ToString() + ")");
-            
+            this.labelImageBrightness.Text = "image brightness: " + _settings.Brightness.ToString();
+
             // pseudo color table is special
             switch ( _settings.PseudoColorTable ) {
                 case AppSettings.ColorTable.TEMPERATURE: _pal = buildPaletteTemperature(); break;
@@ -656,6 +658,7 @@ namespace GrzBeamProfiler
         private void hScrollBarExposure_Scroll(object sender, ScrollEventArgs e) {
             _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, this.hScrollBarExposure.Value, CameraControlFlags.Manual);
             _settings.Exposure = hScrollBarExposure.Value;
+            this.labelCameraExposure.Text = "camera exposure: " + _settings.Exposure.ToString();
             this.toolTip.SetToolTip(
                 this.hScrollBarExposure, 
                 "camera exposure time = " + _settings.Exposure.ToString() + 
@@ -665,6 +668,7 @@ namespace GrzBeamProfiler
         private void hScrollBarBrightness_Scroll(object sender, ScrollEventArgs e) {
             _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, this.hScrollBarBrightness.Value, VideoProcAmpFlags.Manual);
             _settings.Brightness = hScrollBarBrightness.Value;
+            this.labelImageBrightness.Text = "image brightness: " + _settings.Brightness.ToString();
             this.toolTip.SetToolTip(
                 this.hScrollBarBrightness, 
                 "camera brightness = " + _settings.Brightness.ToString() + 

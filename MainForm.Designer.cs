@@ -46,9 +46,9 @@
             this.buttonCaptureBackground = new System.Windows.Forms.Button();
             this.panelGraphs = new System.Windows.Forms.Panel();
             this.tableLayoutPanelGraphs = new System.Windows.Forms.TableLayoutPanel();
+            this.labelCameraExposure = new System.Windows.Forms.Label();
+            this.labelImageBrightness = new System.Windows.Forms.Label();
             this.timerStillImage = new System.Windows.Forms.Timer(this.components);
-            this.label1 = new System.Windows.Forms.Label();
-            this.label2 = new System.Windows.Forms.Label();
             this.tableLayoutPanel1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBoxPseudo)).BeginInit();
             this.panel4.SuspendLayout();
@@ -81,7 +81,7 @@
             // 
             // connectButton
             // 
-            this.connectButton.Location = new System.Drawing.Point(433, 3);
+            this.connectButton.Location = new System.Drawing.Point(448, 3);
             this.connectButton.Name = "connectButton";
             this.tableLayoutPanel1.SetRowSpan(this.connectButton, 2);
             this.connectButton.Size = new System.Drawing.Size(74, 54);
@@ -103,7 +103,7 @@
             this.hScrollBarBrightness.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.hScrollBarBrightness.LargeChange = 1;
-            this.hScrollBarBrightness.Location = new System.Drawing.Point(297, 35);
+            this.hScrollBarBrightness.Location = new System.Drawing.Point(312, 35);
             this.hScrollBarBrightness.Margin = new System.Windows.Forms.Padding(0, 5, 7, 0);
             this.hScrollBarBrightness.Maximum = 10;
             this.hScrollBarBrightness.Minimum = -10;
@@ -119,7 +119,7 @@
             this.hScrollBarExposure.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.hScrollBarExposure.LargeChange = 1;
-            this.hScrollBarExposure.Location = new System.Drawing.Point(297, 5);
+            this.hScrollBarExposure.Location = new System.Drawing.Point(312, 5);
             this.hScrollBarExposure.Margin = new System.Windows.Forms.Padding(0, 5, 7, 0);
             this.hScrollBarExposure.Maximum = 1;
             this.hScrollBarExposure.Minimum = -10;
@@ -146,7 +146,7 @@
             // 
             this.buttonSettings.BackgroundImage = ((System.Drawing.Image)(resources.GetObject("buttonSettings.BackgroundImage")));
             this.buttonSettings.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Center;
-            this.buttonSettings.Location = new System.Drawing.Point(510, 30);
+            this.buttonSettings.Location = new System.Drawing.Point(525, 30);
             this.buttonSettings.Margin = new System.Windows.Forms.Padding(0);
             this.buttonSettings.Name = "buttonSettings";
             this.buttonSettings.Size = new System.Drawing.Size(35, 27);
@@ -177,7 +177,7 @@
             this.tableLayoutPanel1.ColumnCount = 7;
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 59F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 138F));
-            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 100F));
+            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 115F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 133F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
@@ -192,8 +192,8 @@
             this.tableLayoutPanel1.Controls.Add(this.devicesCombo, 1, 0);
             this.tableLayoutPanel1.Controls.Add(this.panelGraphs, 0, 2);
             this.tableLayoutPanel1.Controls.Add(this.connectButton, 4, 0);
-            this.tableLayoutPanel1.Controls.Add(this.label1, 2, 0);
-            this.tableLayoutPanel1.Controls.Add(this.label2, 2, 1);
+            this.tableLayoutPanel1.Controls.Add(this.labelCameraExposure, 2, 0);
+            this.tableLayoutPanel1.Controls.Add(this.labelImageBrightness, 2, 1);
             this.tableLayoutPanel1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.tableLayoutPanel1.Location = new System.Drawing.Point(0, 0);
             this.tableLayoutPanel1.Margin = new System.Windows.Forms.Padding(0);
@@ -208,7 +208,7 @@
             // pictureBoxPseudo
             // 
             this.tableLayoutPanel1.SetColumnSpan(this.pictureBoxPseudo, 2);
-            this.pictureBoxPseudo.Location = new System.Drawing.Point(513, 3);
+            this.pictureBoxPseudo.Location = new System.Drawing.Point(528, 3);
             this.pictureBoxPseudo.Name = "pictureBoxPseudo";
             this.pictureBoxPseudo.Size = new System.Drawing.Size(248, 24);
             this.pictureBoxPseudo.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
@@ -221,10 +221,10 @@
             this.panel4.Controls.Add(this.buttonCaptureBackground);
             this.panel4.Controls.Add(this.snapshotButton);
             this.panel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.panel4.Location = new System.Drawing.Point(550, 30);
+            this.panel4.Location = new System.Drawing.Point(565, 30);
             this.panel4.Margin = new System.Windows.Forms.Padding(0);
             this.panel4.Name = "panel4";
-            this.panel4.Size = new System.Drawing.Size(350, 30);
+            this.panel4.Size = new System.Drawing.Size(335, 30);
             this.panel4.TabIndex = 19;
             // 
             // buttonCaptureBackground
@@ -264,32 +264,32 @@
             this.tableLayoutPanelGraphs.TabIndex = 13;
             this.tableLayoutPanelGraphs.Paint += new System.Windows.Forms.PaintEventHandler(this.tableLayoutPanelGraphs_Paint);
             // 
+            // labelCameraExposure
+            // 
+            this.labelCameraExposure.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.labelCameraExposure.AutoSize = true;
+            this.labelCameraExposure.Location = new System.Drawing.Point(200, 8);
+            this.labelCameraExposure.Margin = new System.Windows.Forms.Padding(3, 8, 3, 0);
+            this.labelCameraExposure.Name = "labelCameraExposure";
+            this.labelCameraExposure.Size = new System.Drawing.Size(109, 13);
+            this.labelCameraExposure.TabIndex = 21;
+            this.labelCameraExposure.Text = "camera exposure: -10";
+            // 
+            // labelImageBrightness
+            // 
+            this.labelImageBrightness.AutoSize = true;
+            this.labelImageBrightness.Location = new System.Drawing.Point(200, 36);
+            this.labelImageBrightness.Margin = new System.Windows.Forms.Padding(3, 6, 3, 0);
+            this.labelImageBrightness.Name = "labelImageBrightness";
+            this.labelImageBrightness.Size = new System.Drawing.Size(107, 13);
+            this.labelImageBrightness.TabIndex = 22;
+            this.labelImageBrightness.Text = "image brightness: -10";
+            // 
             // timerStillImage
             // 
             this.timerStillImage.Interval = 300;
             this.timerStillImage.Tick += new System.EventHandler(this.timerStillImage_Tick);
-            // 
-            // label1
-            // 
-            this.label1.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(206, 8);
-            this.label1.Margin = new System.Windows.Forms.Padding(3, 8, 3, 0);
-            this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(88, 13);
-            this.label1.TabIndex = 21;
-            this.label1.Text = "camera exposure";
-            // 
-            // label2
-            // 
-            this.label2.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(208, 36);
-            this.label2.Margin = new System.Windows.Forms.Padding(3, 6, 3, 0);
-            this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(86, 13);
-            this.label2.TabIndex = 22;
-            this.label2.Text = "image brightness";
             // 
             // MainForm
             // 
@@ -333,8 +333,8 @@
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanelGraphs;
         private System.Windows.Forms.Timer timerStillImage;
         private System.Windows.Forms.Button buttonCaptureBackground;
-        private System.Windows.Forms.Label label1;
-        private System.Windows.Forms.Label label2;
+        private System.Windows.Forms.Label labelCameraExposure;
+        private System.Windows.Forms.Label labelImageBrightness;
         //        private System.Windows.Forms.PictureBox pictureBox;
     }
 }
