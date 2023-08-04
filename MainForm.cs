@@ -23,7 +23,8 @@ namespace GrzBeamProfiler
         AppSettings _settings = new AppSettings();       // app settings
 
         private FilterInfoCollection _videoDevices;      // AForge collection of camera devices
-        private VideoCaptureDevice _videoDevice = null;  // AForge camera device  
+        private VideoCaptureDevice _videoDevice = null;  // AForge camera device
+        private int _videoDeviceRestartCounter = 0;      // video device restart counter per app session
 
         private string _buttonConnectString;             // button text, a lame method to distinguish between camera "connect" vs. "- stop -" 
 
@@ -557,6 +558,43 @@ namespace GrzBeamProfiler
                 _videoDevice.Start();
                 _videoDevice.NewFrame += new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
                 _justConnected = true;
+// intentional
+//     a): 'Task.Delay(10000).ContinueWith' with no need to wait for completion
+//     b): 'await Task.Delay' with the need of a non blocking wait for completion
+#pragma warning disable CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
+//     a): in case, the _videoDevice won't start within 10s or _justConnected is still true (aka no videoDevice_NewFrame event)
+                Task.Delay(10000).ContinueWith(t => {
+                    Invoke(new Action(async () => {
+                        // trigger for delayed action: camera is clicked on, aka  shows '- stop -'  AND camera is not running OR no new frame event happened
+                        if ( _buttonConnectString != this.connectButton.Text && (!_videoDevice.IsRunning || _justConnected) ) {
+                            if ( _videoDeviceRestartCounter < 5 ) {
+                                _videoDeviceRestartCounter++;
+                                if ( !_videoDevice.IsRunning ) {
+                                    GrzTools.Logger.logTextLn(DateTime.Now, String.Format("connectButton_Click: _videoDevice is not running"));
+                                }
+                                if ( _justConnected ) {
+                                    GrzTools.Logger.logTextLn(DateTime.Now, String.Format("connectButton_Click: no videoDevice_NewFrame event received"));
+                                }
+                                // stop camera 
+                                this.connectButton.PerformClick();
+                                // wait
+                                await Task.Delay(600);
+                                // reset all camera properties to camera default values:
+                                // !! OV5640 vid_05a3&pid_9520 stops working after gotten fooled with awkward exposure params !!
+                                setCameraDefaultProps();
+                                // start camera
+                                this.connectButton.PerformClick();
+                            } else {
+                                // give up note
+                                GrzTools.Logger.logTextLn(DateTime.Now, String.Format("connectButton_Click: _videoDeviceRestartCounter >= 5, giving up in current app session"));
+                                // stop camera
+                                this.connectButton.PerformClick();
+                                this.Text = "!! Camera failure !!";
+                            }
+                        }
+                    }));
+                });
+#pragma warning restore CS4014
                 // get camera exposure range parameters
                 int minValue;
                 int maxValue; 
@@ -568,8 +606,11 @@ namespace GrzBeamProfiler
                 this.hScrollBarExposure.Minimum = minValue;
                 this.hScrollBarExposure.SmallChange = stepSize;
                 this.hScrollBarExposure.LargeChange = stepSize;
-                // set camera exposure time
-                _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, this.hScrollBarExposure.Value, CameraControlFlags.Manual);
+                // only set camera exposure time manually, if not in auto mode
+                controlFlags = getCameraExposureAuto();
+                if ( controlFlags != CameraControlFlags.Auto ) {
+                    _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, this.hScrollBarExposure.Value, CameraControlFlags.Manual);
+                }
                 // get camera brightness range parameters
                 VideoProcAmpFlags controlFlagsVideo;
                 _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Brightness, out minValue, out maxValue, out stepSize, out defaultValue, out controlFlagsVideo);
@@ -577,7 +618,7 @@ namespace GrzBeamProfiler
                 this.hScrollBarBrightness.Minimum = minValue;
                 this.hScrollBarBrightness.SmallChange = stepSize;
                 this.hScrollBarBrightness.LargeChange = stepSize;
-                // set camera brightness
+//     b): set camera brightness, non blocking wait after that
                 // http://www.aforgenet.com/forum/viewtopic.php?f=2&t=2939
                 // https://code.google.com/archive/p/aforge/issues/357#makechanges mods were needed for making brightness adjustable
                 _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, this.hScrollBarBrightness.Value, VideoProcAmpFlags.Manual);
@@ -630,6 +671,91 @@ namespace GrzBeamProfiler
             } catch {
                 ;
             } 
+        }
+
+        // camera exposure auto flag
+        private CameraControlFlags getCameraExposureAuto() {
+            if ( _videoDevice == null ) {
+                return CameraControlFlags.None;
+            }
+            CameraControlFlags flag;
+            int intValue;
+            _videoDevice.GetCameraProperty(CameraControlProperty.Exposure, out intValue, out flag);
+            return flag;
+        }
+
+        // force camera to set all its properties to default values
+        private void setCameraDefaultProps() {
+            if ( _videoDevice == null ) {
+                return;
+            }
+
+            // camera props
+            int min, max, step, def;
+            CameraControlFlags cFlag;
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Exposure, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, def, CameraControlFlags.Auto);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Focus, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Focus, def, CameraControlFlags.Manual);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Iris, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Iris, def, CameraControlFlags.Manual);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Pan, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Pan, def, CameraControlFlags.Manual);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Roll, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Roll, def, CameraControlFlags.Manual);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Tilt, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Tilt, def, CameraControlFlags.Manual);
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Zoom, out min, out max, out step, out def, out cFlag);
+            _videoDevice.SetCameraProperty(CameraControlProperty.Zoom, def, CameraControlFlags.Manual);
+
+            // video props
+            VideoProcAmpFlags vFlag;
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.BacklightCompensation, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.BacklightCompensation, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Brightness, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.ColorEnable, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.ColorEnable, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Contrast, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Contrast, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Gain, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Gain, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Gamma, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Gamma, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Hue, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Hue, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Saturation, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Saturation, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Sharpness, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Sharpness, def, VideoProcAmpFlags.Manual);
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.WhiteBalance, out min, out max, out step, out def, out vFlag);
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.WhiteBalance, def, VideoProcAmpFlags.Auto);
+
+            // update related UI controls
+            int value;
+            CameraControlFlags controlFlags;
+            _videoDevice.GetCameraProperty(CameraControlProperty.Exposure, out value, out controlFlags);
+            this.hScrollBarExposure.Value = value;
+            VideoProcAmpFlags controlFlagsVideo;
+            _videoDevice.GetVideoProperty(VideoProcAmpProperty.Brightness, out value, out controlFlagsVideo);
+            this.hScrollBarBrightness.Value = value;
+            // needed to update the scroller according to the new value
+            this.PerformLayout();
+            // save to settings
+            updateSettingsFromApp();
+            // update tooltips
+            this.toolTip.SetToolTip(this.hScrollBarExposure, 
+                                    "Camera exposure " + 
+                                    _settings.Exposure.ToString() + 
+                                    " (" + this.hScrollBarExposure.Minimum.ToString() + ".." + 
+                                    this.hScrollBarExposure.Maximum.ToString() + ")" +
+                                    (getCameraExposureAuto() == CameraControlFlags.Auto ? " auto on" : " auto off")
+                                    );
+            this.toolTip.SetToolTip(this.hScrollBarBrightness, 
+                                    "Camera brightness " + 
+                                    _settings.Brightness.ToString() + 
+                                    " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." + 
+                                    this.hScrollBarBrightness.Maximum.ToString() + ")");
         }
 
         // show extended camera props dialog
