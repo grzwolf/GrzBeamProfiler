@@ -38,7 +38,7 @@
             this.hScrollBarExposure = new System.Windows.Forms.HScrollBar();
             this.snapshotButton = new System.Windows.Forms.Button();
             this.buttonSettings = new System.Windows.Forms.Button();
-            this.buttonProperties = new System.Windows.Forms.Button();
+            this.buttonCameraProperties = new System.Windows.Forms.Button();
             this.timerUpdateHeadline = new System.Windows.Forms.Timer(this.components);
             this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
             this.pictureBoxPseudo = new System.Windows.Forms.PictureBox();
@@ -81,7 +81,7 @@
             // 
             // connectButton
             // 
-            this.connectButton.Location = new System.Drawing.Point(448, 3);
+            this.connectButton.Location = new System.Drawing.Point(458, 3);
             this.connectButton.Name = "connectButton";
             this.tableLayoutPanel1.SetRowSpan(this.connectButton, 2);
             this.connectButton.Size = new System.Drawing.Size(74, 54);
@@ -103,7 +103,7 @@
             this.hScrollBarBrightness.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.hScrollBarBrightness.LargeChange = 1;
-            this.hScrollBarBrightness.Location = new System.Drawing.Point(312, 35);
+            this.hScrollBarBrightness.Location = new System.Drawing.Point(322, 35);
             this.hScrollBarBrightness.Margin = new System.Windows.Forms.Padding(0, 5, 7, 0);
             this.hScrollBarBrightness.Maximum = 10;
             this.hScrollBarBrightness.Minimum = -10;
@@ -111,7 +111,6 @@
             this.hScrollBarBrightness.Size = new System.Drawing.Size(126, 17);
             this.hScrollBarBrightness.TabIndex = 13;
             this.toolTip.SetToolTip(this.hScrollBarBrightness, "camera brightness");
-            this.hScrollBarBrightness.Value = -6;
             this.hScrollBarBrightness.Scroll += new System.Windows.Forms.ScrollEventHandler(this.hScrollBarBrightness_Scroll);
             // 
             // hScrollBarExposure
@@ -119,7 +118,7 @@
             this.hScrollBarExposure.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.hScrollBarExposure.LargeChange = 1;
-            this.hScrollBarExposure.Location = new System.Drawing.Point(312, 5);
+            this.hScrollBarExposure.Location = new System.Drawing.Point(322, 5);
             this.hScrollBarExposure.Margin = new System.Windows.Forms.Padding(0, 5, 7, 0);
             this.hScrollBarExposure.Maximum = 1;
             this.hScrollBarExposure.Minimum = -10;
@@ -146,7 +145,7 @@
             // 
             this.buttonSettings.BackgroundImage = ((System.Drawing.Image)(resources.GetObject("buttonSettings.BackgroundImage")));
             this.buttonSettings.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Center;
-            this.buttonSettings.Location = new System.Drawing.Point(525, 30);
+            this.buttonSettings.Location = new System.Drawing.Point(535, 30);
             this.buttonSettings.Margin = new System.Windows.Forms.Padding(0);
             this.buttonSettings.Name = "buttonSettings";
             this.buttonSettings.Size = new System.Drawing.Size(35, 27);
@@ -155,16 +154,16 @@
             this.buttonSettings.UseVisualStyleBackColor = true;
             this.buttonSettings.Click += new System.EventHandler(this.buttonSettings_Click);
             // 
-            // buttonProperties
+            // buttonCameraProperties
             // 
-            this.buttonProperties.Location = new System.Drawing.Point(3, 3);
-            this.buttonProperties.Name = "buttonProperties";
-            this.tableLayoutPanel1.SetRowSpan(this.buttonProperties, 2);
-            this.buttonProperties.Size = new System.Drawing.Size(53, 53);
-            this.buttonProperties.TabIndex = 10;
-            this.buttonProperties.Text = "camera settings";
-            this.buttonProperties.UseVisualStyleBackColor = true;
-            this.buttonProperties.Click += new System.EventHandler(this.buttonProperties_Click);
+            this.buttonCameraProperties.Location = new System.Drawing.Point(3, 3);
+            this.buttonCameraProperties.Name = "buttonCameraProperties";
+            this.tableLayoutPanel1.SetRowSpan(this.buttonCameraProperties, 2);
+            this.buttonCameraProperties.Size = new System.Drawing.Size(53, 53);
+            this.buttonCameraProperties.TabIndex = 10;
+            this.buttonCameraProperties.Text = "camera settings";
+            this.buttonCameraProperties.UseVisualStyleBackColor = true;
+            this.buttonCameraProperties.Click += new System.EventHandler(this.buttonCameraProperties_Click);
             // 
             // timerUpdateHeadline
             // 
@@ -177,14 +176,14 @@
             this.tableLayoutPanel1.ColumnCount = 7;
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 59F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 138F));
-            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 115F));
+            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 125F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 133F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
             this.tableLayoutPanel1.Controls.Add(this.hScrollBarBrightness, 3, 1);
             this.tableLayoutPanel1.Controls.Add(this.buttonSettings, 5, 1);
-            this.tableLayoutPanel1.Controls.Add(this.buttonProperties, 0, 0);
+            this.tableLayoutPanel1.Controls.Add(this.buttonCameraProperties, 0, 0);
             this.tableLayoutPanel1.Controls.Add(this.hScrollBarExposure, 3, 0);
             this.tableLayoutPanel1.Controls.Add(this.pictureBoxPseudo, 5, 0);
             this.tableLayoutPanel1.Controls.Add(this.panel4, 6, 1);
@@ -208,7 +207,7 @@
             // pictureBoxPseudo
             // 
             this.tableLayoutPanel1.SetColumnSpan(this.pictureBoxPseudo, 2);
-            this.pictureBoxPseudo.Location = new System.Drawing.Point(528, 3);
+            this.pictureBoxPseudo.Location = new System.Drawing.Point(538, 3);
             this.pictureBoxPseudo.Name = "pictureBoxPseudo";
             this.pictureBoxPseudo.Size = new System.Drawing.Size(248, 24);
             this.pictureBoxPseudo.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
@@ -221,10 +220,10 @@
             this.panel4.Controls.Add(this.buttonCaptureBackground);
             this.panel4.Controls.Add(this.snapshotButton);
             this.panel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.panel4.Location = new System.Drawing.Point(565, 30);
+            this.panel4.Location = new System.Drawing.Point(575, 30);
             this.panel4.Margin = new System.Windows.Forms.Padding(0);
             this.panel4.Name = "panel4";
-            this.panel4.Size = new System.Drawing.Size(335, 30);
+            this.panel4.Size = new System.Drawing.Size(325, 30);
             this.panel4.TabIndex = 19;
             // 
             // buttonCaptureBackground
@@ -272,9 +271,9 @@
             this.labelCameraExposure.Location = new System.Drawing.Point(200, 8);
             this.labelCameraExposure.Margin = new System.Windows.Forms.Padding(3, 8, 3, 0);
             this.labelCameraExposure.Name = "labelCameraExposure";
-            this.labelCameraExposure.Size = new System.Drawing.Size(109, 13);
+            this.labelCameraExposure.Size = new System.Drawing.Size(119, 13);
             this.labelCameraExposure.TabIndex = 21;
-            this.labelCameraExposure.Text = "camera exposure: -10";
+            this.labelCameraExposure.Text = "camera exposure: auto";
             // 
             // labelImageBrightness
             // 
@@ -321,7 +320,7 @@
         private System.Windows.Forms.Button connectButton;
         private System.Windows.Forms.ToolTip toolTip;
         private System.Windows.Forms.Button snapshotButton;
-        private System.Windows.Forms.Button buttonProperties;
+        private System.Windows.Forms.Button buttonCameraProperties;
         private System.Windows.Forms.Timer timerUpdateHeadline;
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanel1;
         private System.Windows.Forms.HScrollBar hScrollBarExposure;

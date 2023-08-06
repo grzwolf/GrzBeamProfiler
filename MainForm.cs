@@ -208,18 +208,21 @@ namespace GrzBeamProfiler
             // essential app settings
             this.Size = _settings.FormSize;
             this.Location = _settings.FormLocation;
+
+            // context menu
             this.pictureBox_CmForceGray.Checked = _settings.ForceGray;
             this.pictureBox_CmPseudoColors.Checked = _settings.PseudoColors;
+
+            // update exposure and brightness scrollers
             this.hScrollBarExposure.Minimum = _settings.ExposureMin;
             this.hScrollBarExposure.Maximum = _settings.ExposureMax;
             this.hScrollBarExposure.Value = _settings.Exposure;
-            this.labelCameraExposure.Text = "camera exposure: " + _settings.Exposure.ToString();
-            this.toolTip.SetToolTip(this.hScrollBarExposure, "Camera exposure " + _settings.Exposure.ToString() + " (" + this.hScrollBarExposure.Minimum.ToString() + ".." + this.hScrollBarExposure.Maximum.ToString() + ")");
             this.hScrollBarBrightness.Minimum = _settings.BrightnessMin;
             this.hScrollBarBrightness.Maximum = _settings.BrightnessMax;
             this.hScrollBarBrightness.Value = _settings.Brightness;
-            this.toolTip.SetToolTip(this.hScrollBarBrightness, "Camera brightness " + _settings.Brightness.ToString() + " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." + this.hScrollBarBrightness.Maximum.ToString() + ")");
-            this.labelImageBrightness.Text = "image brightness: " + _settings.Brightness.ToString();
+            // update exposure and brightness labels and tooltips
+            updateExposureUI();
+            updateBrightnessUI();
 
             // pseudo color table is special
             switch ( _settings.PseudoColorTable ) {
@@ -439,9 +442,10 @@ namespace GrzBeamProfiler
                 ndx++;
             }
 
-            // null at 1st enter
+            // only null at 1st enter
             if ( (_videoDevice == null) || currentDeviceDisappeared ) {
-                this.devicesCombo.SelectedIndex = indexToSelect; // selecting an index automatically calls devicesCombo_SelectedIndexChanged(..)
+                // selecting an index automatically calls devicesCombo_SelectedIndexChanged(..), which creates a new _videoDevice
+                this.devicesCombo.SelectedIndex = indexToSelect; 
             } else {
                 // do not reselect camera (+ resolution) at a new camera arrival/departure when camera is already running 
                 if ( _videoDevice.IsRunning ) {
@@ -455,7 +459,7 @@ namespace GrzBeamProfiler
         }
 
         // closing the app
-        private async void MainForm_FormClosing( object sender, FormClosingEventArgs e )
+        private void MainForm_FormClosing( object sender, FormClosingEventArgs e )
         {
             // stop screenshot providing network socket server
             _runSocketTask = false;
@@ -466,15 +470,10 @@ namespace GrzBeamProfiler
             // IMessageFilter
             System.Windows.Forms.Application.RemoveMessageFilter(this);
 
-            // stop camera & restore meaningful camera controls
+            // stop camera
             if ( ( _videoDevice != null ) && _videoDevice.IsRunning ) {
                 _videoDevice.SignalToStop();
                 _videoDevice.NewFrame -= new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
-                _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, -5, CameraControlFlags.Auto);
-                _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, -6, VideoProcAmpFlags.Auto);
-                await Task.Delay(500);
-                EnableConnectionControls(true);
-                await Task.Delay(500);
             }
 
             // INI: write to ini
@@ -490,23 +489,51 @@ namespace GrzBeamProfiler
             this.connectButton.Text = enable ? _buttonConnectString : "-- stop --";
         }
 
-        // video device selection was changed
+        // a video device was selected: either on purpose by user or at app start
         private void devicesCombo_SelectedIndexChanged( object sender, EventArgs e )
         {
             if ( _videoDevices.Count != 0 ) {
+                // create _videoDevice object
                 _videoDevice = new VideoCaptureDevice(_videoDevices[devicesCombo.SelectedIndex].MonikerString);
+                // check and if needed, sync app _settings with camera props
+                evaluateCameraAndSettings();
+            }
+        }
+
+        // check and if needed, sync _settings with camera props
+        void evaluateCameraAndSettings() {
+            // camera or its properties might have changed: update _settings accordingly
+            string change = "";
+            // _videoDevice moniker may not match to app _settings
+            if ( _settings.CameraMoniker != _videoDevices[devicesCombo.SelectedIndex].MonikerString ) {
                 _settings.CameraMoniker = _videoDevices[devicesCombo.SelectedIndex].MonikerString;
-                EnumerateSupportedFrameSizes(_videoDevice);
+                change = "model";
+            }
+            // _videoDevice resolution may not match to app _settings
+            if ( !evaluateCameraFrameSizes(_videoDevice) ) {
+                change += change.Length > 0 ? ", " : "";
+                change += "resolution";
+            }
+            // _videoDevice exposure / brightness may not match to app _settings
+            if ( !evaluateCameraExposureBrightnessProps() ) {
+                change += change.Length > 0 ? ", " : "";
+                change += "exposure";
+            }
+            // camera vs. _settings mismatch note
+            if ( change.Length > 0 ) {
+                MessageBox.Show(String.Format("Camera '{0}' did not match to app settings, latter are now updated.", change), "Note");
             }
         }
 
         // collect supported video sizes
-        private void EnumerateSupportedFrameSizes( VideoCaptureDevice videoDevice )
+        private bool evaluateCameraFrameSizes( VideoCaptureDevice videoDevice )
         {
+            bool retVal;
             this.Cursor = Cursors.WaitCursor;
+            Size foundSize = new Size();  
             this.videoResolutionsCombo.Items.Clear();
             try {
-                int indexToSelect = 0;
+                int indexToSelect = -1;
                 int ndx = 0;
                 foreach ( VideoCapabilities capabilty in videoDevice.VideoCapabilities ) {
                     string currRes = string.Format("{0} x {1}", capabilty.FrameSize.Width, capabilty.FrameSize.Height);
@@ -514,17 +541,26 @@ namespace GrzBeamProfiler
                     if ( this.videoResolutionsCombo.FindString(currRes) == -1 ) {
                         this.videoResolutionsCombo.Items.Add(currRes);
                     }
+                    // match to settings
                     if ( currRes == String.Format("{0} x {1}", _settings.CameraResolution.Width, _settings.CameraResolution.Height) ) {
                         indexToSelect = ndx;
                     }
                     ndx++;
                 }
-                if ( videoDevice.VideoCapabilities.Length > 0 ) {
+                if ( indexToSelect != -1 ) {
+                    // match
                     this.videoResolutionsCombo.SelectedIndex = indexToSelect;
+                    retVal = true;
+                } else {
+                    // no match
+                    this.videoResolutionsCombo.SelectedIndex = 0;
+                    _settings.CameraResolution = foundSize;
+                    retVal = false;
                 }
             } finally {
                 this.Cursor = Cursors.Default;
             }
+            return retVal;
         }
 
         // camera resolution was changed
@@ -540,7 +576,7 @@ namespace GrzBeamProfiler
         //
         // "Connect" button clicked: starts or stops image processing
         //
-        private async void connectButton_Click( object sender, EventArgs e )
+        private void connectButton_Click( object sender, EventArgs e )
         {
             // stop still image timer
             this.timerStillImage.Stop();
@@ -556,13 +592,10 @@ namespace GrzBeamProfiler
                 _paintBusy = false;
                 _videoDevice.VideoResolution = _videoDevice.VideoCapabilities[videoResolutionsCombo.SelectedIndex];
                 _videoDevice.Start();
-                _videoDevice.NewFrame += new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
                 _justConnected = true;
-// intentional
-//     a): 'Task.Delay(10000).ContinueWith' with no need to wait for completion
-//     b): 'await Task.Delay' with the need of a non blocking wait for completion
-#pragma warning disable CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
-//     a): in case, the _videoDevice won't start within 10s or _justConnected is still true (aka no videoDevice_NewFrame event)
+                _videoDevice.NewFrame += new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
+
+                // fire & forget: in case, the _videoDevice won't start within 10s or _justConnected is still true (aka no videoDevice_NewFrame event)
                 Task.Delay(10000).ContinueWith(t => {
                     Invoke(new Action(async () => {
                         // trigger for delayed action: camera is clicked on, aka  shows '- stop -'  AND camera is not running OR no new frame event happened
@@ -594,36 +627,8 @@ namespace GrzBeamProfiler
                         }
                     }));
                 });
-#pragma warning restore CS4014
-                // get camera exposure range parameters
-                int minValue;
-                int maxValue; 
-                int stepSize; 
-                int defaultValue;
-                CameraControlFlags controlFlags;
-                _videoDevice.GetCameraPropertyRange(CameraControlProperty.Exposure, out minValue, out maxValue, out stepSize, out defaultValue, out controlFlags);
-                this.hScrollBarExposure.Maximum = maxValue;
-                this.hScrollBarExposure.Minimum = minValue;
-                this.hScrollBarExposure.SmallChange = stepSize;
-                this.hScrollBarExposure.LargeChange = stepSize;
-                // only set camera exposure time manually, if not in auto mode
-                controlFlags = getCameraExposureAuto();
-                if ( controlFlags != CameraControlFlags.Auto ) {
-                    _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, this.hScrollBarExposure.Value, CameraControlFlags.Manual);
-                }
-                // get camera brightness range parameters
-                VideoProcAmpFlags controlFlagsVideo;
-                _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Brightness, out minValue, out maxValue, out stepSize, out defaultValue, out controlFlagsVideo);
-                this.hScrollBarBrightness.Maximum = maxValue;
-                this.hScrollBarBrightness.Minimum = minValue;
-                this.hScrollBarBrightness.SmallChange = stepSize;
-                this.hScrollBarBrightness.LargeChange = stepSize;
-//     b): set camera brightness, non blocking wait after that
-                // http://www.aforgenet.com/forum/viewtopic.php?f=2&t=2939
-                // https://code.google.com/archive/p/aforge/issues/357#makechanges mods were needed for making brightness adjustable
-                _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, this.hScrollBarBrightness.Value, VideoProcAmpFlags.Manual);
-                await Task.Delay(600);
-                // disable some controls
+
+                // disable camera controls
                 EnableConnectionControls(false);
                 // start screenshot socket server, runs in a separate task
                 if ( _settings.ProvideSocketScreenshots ) {
@@ -673,8 +678,8 @@ namespace GrzBeamProfiler
             } 
         }
 
-        // camera exposure auto flag
-        private CameraControlFlags getCameraExposureAuto() {
+        // camera exposure mode flag
+        private CameraControlFlags getCameraExposureMode() {
             if ( _videoDevice == null ) {
                 return CameraControlFlags.None;
             }
@@ -684,7 +689,60 @@ namespace GrzBeamProfiler
             return flag;
         }
 
-        // force camera to set all its properties to default values
+        // evaluate camera exposure & brightness against _settings
+        bool evaluateCameraExposureBrightnessProps() {
+            bool retVal = true;
+
+            int minValue;
+            int maxValue;
+            int stepSize;
+            int outValue;
+            int setValue;
+            CameraControlFlags controlFlags;
+            // get camera exposure parameters
+            _videoDevice.GetCameraPropertyRange(CameraControlProperty.Exposure, out minValue, out maxValue, out stepSize, out outValue, out controlFlags);
+            _videoDevice.GetCameraProperty(CameraControlProperty.Exposure, out setValue, out controlFlags);
+            // compare camera props with _settings
+            if ( minValue != _settings.ExposureMin || maxValue != _settings.ExposureMax || setValue != _settings.Exposure ) {
+                retVal = false;
+                // get camera exposure auto mode
+                controlFlags = getCameraExposureMode();
+                this.hScrollBarExposure.Maximum = maxValue;
+                _settings.ExposureMin = maxValue;
+                this.hScrollBarExposure.Minimum = minValue;
+                _settings.ExposureMax = minValue;
+                this.hScrollBarExposure.SmallChange = stepSize;
+                this.hScrollBarExposure.LargeChange = stepSize;
+                this.hScrollBarExposure.Value = setValue;
+                _settings.Exposure = setValue;
+                if ( controlFlags == CameraControlFlags.Auto ) {
+                    // leave camera in exposure auto mode
+                    _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, setValue, CameraControlFlags.Auto);
+                }
+            }
+            // get camera brightness parameters
+            VideoProcAmpFlags controlFlagsVideo;
+            _videoDevice.GetVideoPropertyRange(VideoProcAmpProperty.Brightness, out minValue, out maxValue, out stepSize, out outValue, out controlFlagsVideo);
+            _videoDevice.GetVideoProperty(VideoProcAmpProperty.Brightness, out setValue, out controlFlagsVideo);
+            if ( minValue != _settings.BrightnessMin || maxValue != _settings.BrightnessMax || setValue != _settings.Brightness ) {
+                retVal = false;
+                this.hScrollBarBrightness.Maximum = maxValue;
+                _settings.BrightnessMax = maxValue;
+                this.hScrollBarBrightness.Minimum = minValue;
+                _settings.BrightnessMin = minValue;
+                this.hScrollBarBrightness.Value = setValue;
+                _settings.Brightness = setValue;
+                this.hScrollBarBrightness.SmallChange = stepSize;
+                this.hScrollBarBrightness.LargeChange = stepSize;
+            }
+            // update related labels & tooltips
+            updateExposureUI();
+            updateBrightnessUI();
+
+            return retVal;
+        }
+
+        // force camera to set all its properties to default values: useful if camera won't start due to awkward settings
         private void setCameraDefaultProps() {
             if ( _videoDevice == null ) {
                 return;
@@ -743,23 +801,34 @@ namespace GrzBeamProfiler
             this.PerformLayout();
             // save to settings
             updateSettingsFromApp();
-            // update tooltips
-            this.toolTip.SetToolTip(this.hScrollBarExposure, 
-                                    "Camera exposure " + 
-                                    _settings.Exposure.ToString() + 
-                                    " (" + this.hScrollBarExposure.Minimum.ToString() + ".." + 
-                                    this.hScrollBarExposure.Maximum.ToString() + ")" +
-                                    (getCameraExposureAuto() == CameraControlFlags.Auto ? " auto on" : " auto off")
-                                    );
-            this.toolTip.SetToolTip(this.hScrollBarBrightness, 
-                                    "Camera brightness " + 
-                                    _settings.Brightness.ToString() + 
-                                    " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." + 
+            // update labels and tooltips
+            updateExposureUI();
+            updateBrightnessUI();
+
+            MessageBox.Show("Camera was reset to default values.", "Camera failure");
+        }
+
+        // update exposure & brightness UI labels and tooltips
+        void updateExposureUI() {
+            bool autoMode = getCameraExposureMode() == CameraControlFlags.Auto;
+            this.labelCameraExposure.Text = "camera exposure: " + (autoMode ? " auto" : _settings.Exposure.ToString());
+            this.toolTip.SetToolTip(this.hScrollBarExposure,
+                                    "camera exposure time = " + _settings.Exposure.ToString() +
+                                    " (" + this.hScrollBarExposure.Minimum.ToString() +
+                                    ".." + this.hScrollBarExposure.Maximum.ToString() + ")" +
+                                    (autoMode ? " auto on" : " manual"));
+        }
+        void updateBrightnessUI() {
+            this.labelImageBrightness.Text = "image brightness: " + _settings.Brightness.ToString();
+            this.toolTip.SetToolTip(this.hScrollBarBrightness,
+                                    "image brightness " +
+                                    _settings.Brightness.ToString() +
+                                    " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." +
                                     this.hScrollBarBrightness.Maximum.ToString() + ")");
         }
 
         // show extended camera props dialog
-        private void buttonProperties_Click( object sender, EventArgs e )
+        private void buttonCameraProperties_Click( object sender, EventArgs e )
         {
             if ( _videoDevice != null ) {
                 // DisplayPropertyPage is app modal, if parameter is an app handle
@@ -777,29 +846,51 @@ namespace GrzBeamProfiler
                 VideoProcAmpFlags controlFlagsVideo;
                 _videoDevice.GetVideoProperty(VideoProcAmpProperty.Brightness, out value, out controlFlagsVideo);
                 this.hScrollBarBrightness.Value = value;
+                // save to settings
+                updateSettingsFromApp();
+                // update labels and tooltips
+                updateExposureUI();
+                updateBrightnessUI();
             }
         }
 
-        // set camera exposure & brightness manually via UI scrollers
+        // set camera exposure manually via UI scrollers
         private void hScrollBarExposure_Scroll(object sender, ScrollEventArgs e) {
-            _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, this.hScrollBarExposure.Value, CameraControlFlags.Manual);
-            _settings.Exposure = hScrollBarExposure.Value;
-            this.labelCameraExposure.Text = "camera exposure: " + _settings.Exposure.ToString();
-            this.toolTip.SetToolTip(
-                this.hScrollBarExposure, 
-                "camera exposure time = " + _settings.Exposure.ToString() + 
-                " (" + this.hScrollBarExposure.Minimum.ToString() + 
-                ".." + this.hScrollBarExposure.Maximum.ToString() + ")" );
+            if ( _videoDevice == null ) {
+                return;
+            }
+            CameraControlFlags ccf = getCameraExposureMode();
+            // no need to stress camera settings
+            if ( e.OldValue == e.NewValue && ccf == CameraControlFlags.Manual ) {
+                return;
+            }
+            // switching from auto exposure to manual may need a camera restart
+            if ( ccf == CameraControlFlags.Auto && _videoDevice.IsRunning ) {
+                this.connectButton.PerformClick();
+                Task.Run(() => MessageBox.Show("Leaving exposure auto mode, takes effect after re connecting to the camera.", "Note"));
+            }
+            // update camera
+            _videoDevice.SetCameraProperty(CameraControlProperty.Exposure, e.NewValue, CameraControlFlags.Manual);
+            // update _settings
+            _settings.Exposure = e.NewValue;
+            // update label and tooltip
+            updateExposureUI();
         }
+        // set camera brightness manually via UI scrollers
         private void hScrollBarBrightness_Scroll(object sender, ScrollEventArgs e) {
-            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, this.hScrollBarBrightness.Value, VideoProcAmpFlags.Manual);
-            _settings.Brightness = hScrollBarBrightness.Value;
-            this.labelImageBrightness.Text = "image brightness: " + _settings.Brightness.ToString();
-            this.toolTip.SetToolTip(
-                this.hScrollBarBrightness, 
-                "camera brightness = " + _settings.Brightness.ToString() + 
-                " (" + this.hScrollBarBrightness.Minimum.ToString() + ".." + 
-                this.hScrollBarBrightness.Maximum.ToString() + ")");
+            if ( _videoDevice == null ) {
+                return;
+            }
+            // no need to stress camera settings
+            if ( e.OldValue == e.NewValue ) {
+                return;
+            }
+            // http://www.aforgenet.com/forum/viewtopic.php?f=2&t=2939
+            // https://code.google.com/archive/p/aforge/issues/357#makechanges mods were needed to get brightness adjustable
+            _videoDevice.SetVideoProperty(VideoProcAmpProperty.Brightness, e.NewValue, VideoProcAmpFlags.Manual);
+            _settings.Brightness = e.NewValue;
+            // update label and tooltip
+            updateBrightnessUI();
         }
 
         // allows gray images rendered with pseudo colors
@@ -2961,20 +3052,20 @@ namespace ReceiveSocketImage
             if ( int.TryParse(ini.IniReadValue(iniSection, "Exposure", "-5"), out tmp) ) {
                 Exposure = tmp;
             }
-            if ( int.TryParse(ini.IniReadValue(iniSection, "ExposureMin", "-200"), out tmp) ) {
+            if ( int.TryParse(ini.IniReadValue(iniSection, "ExposureMin", "-10"), out tmp) ) {
                 ExposureMin = tmp;
             }
-            if ( int.TryParse(ini.IniReadValue(iniSection, "ExposureMax", "200"), out tmp) ) {
+            if ( int.TryParse(ini.IniReadValue(iniSection, "ExposureMax", "10"), out tmp) ) {
                 ExposureMax = tmp;
             }
             // camera brightness
-            if ( int.TryParse(ini.IniReadValue(iniSection, "Brightness", "-6"), out tmp) ) {
+            if ( int.TryParse(ini.IniReadValue(iniSection, "Brightness", "0"), out tmp) ) {
                 Brightness = tmp;
             }
-            if ( int.TryParse(ini.IniReadValue(iniSection, "BrightnessMin", "-200"), out tmp) ) {
+            if ( int.TryParse(ini.IniReadValue(iniSection, "BrightnessMin", "-10"), out tmp) ) {
                 BrightnessMin = tmp;
             }
-            if ( int.TryParse(ini.IniReadValue(iniSection, "BrightnessMax", "200"), out tmp) ) {
+            if ( int.TryParse(ini.IniReadValue(iniSection, "BrightnessMax", "10"), out tmp) ) {
                 BrightnessMax = tmp;
             }
             // form width
