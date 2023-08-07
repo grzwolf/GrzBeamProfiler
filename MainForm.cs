@@ -422,16 +422,27 @@ namespace GrzBeamProfiler
 
             // enumerate video devices
             _videoDevices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
+
+            // no camera was found
             if ( _videoDevices.Count == 0 ) {
-                this.devicesCombo.Items.Add("No DirectShow devices found");
+                this.devicesCombo.Items.Add("No UVC camera(s)");
+                this.devicesCombo.SelectedIndexChanged -= new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
                 this.devicesCombo.SelectedIndex = 0;
+                this.devicesCombo.SelectedIndexChanged += new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
                 videoResolutionsCombo.Items.Clear();
+                // most recent camera disappeared, stop it running via connectButton_Click
+                if ( _videoDevice != null && _videoDevice.IsRunning ) {
+                    try {
+                        this.connectButton.PerformClick();
+                        _videoDevice = null;
+                    } catch ( Exception ) {; }
+                }
                 return;
             }
 
             // loop all devices and add them to combo
             bool currentDeviceDisappeared = true;
-            int indexToSelect = 0;
+            int indexToSelect = -1;
             int ndx = 0;
             foreach ( FilterInfo device in _videoDevices ) {
                 this.devicesCombo.Items.Add(device.Name);
@@ -442,18 +453,45 @@ namespace GrzBeamProfiler
                 ndx++;
             }
 
+            // if no camera according to _settings was found
+            if ( indexToSelect == -1 ) {
+                // 1st app start with empty INI
+                if ( _settings.CameraMoniker == "empty" ) {
+                    indexToSelect = 0;
+                }
+            }
+
             // only null at 1st enter
-            if ( (_videoDevice == null) || currentDeviceDisappeared ) {
+            if ( _videoDevice == null ) {
                 // selecting an index automatically calls devicesCombo_SelectedIndexChanged(..), which creates a new _videoDevice
-                this.devicesCombo.SelectedIndex = indexToSelect; 
+                 this.devicesCombo.SelectedIndex = indexToSelect; 
             } else {
-                // do not reselect camera (+ resolution) at a new camera arrival/departure when camera is already running 
+                // a new camera arrived or an existing camera disappeared
                 if ( _videoDevice.IsRunning ) {
-                    this.devicesCombo.SelectedIndexChanged -= new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
-                    this.devicesCombo.SelectedIndex = indexToSelect;
-                    this.devicesCombo.SelectedIndexChanged += new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
+                    // the most recent camera is running ... 
+                    if ( currentDeviceDisappeared ) {
+                        // ... but it disappeared - other camera(s) might be available
+                        try {
+                            // stop disappeared camera
+                            this.connectButton.PerformClick();
+                            _videoDevice = null;
+                        } catch (Exception) {;}
+                        // do not select any other available camera
+                        ;
+                        // leave note
+                        MessageBox.Show("No camera according to app settings was found.", "Note");
+                    } else {
+                        // re select most recent camera, despite of other cameras
+                        this.devicesCombo.SelectedIndexChanged -= new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
+                        this.devicesCombo.SelectedIndex = indexToSelect;
+                        this.devicesCombo.SelectedIndexChanged += new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
+                    }
                 } else {
-                    this.devicesCombo.SelectedIndex = indexToSelect;
+                    // no camera is running
+                    if ( !currentDeviceDisappeared ) {
+                        // only select indexToSelect, if it did not disappear - would otherwise select another available camera
+                        this.devicesCombo.SelectedIndex = indexToSelect;
+                    }
                 }
             }
         }
@@ -492,9 +530,10 @@ namespace GrzBeamProfiler
         // a video device was selected: either on purpose by user or at app start
         private void devicesCombo_SelectedIndexChanged( object sender, EventArgs e )
         {
-            if ( _videoDevices.Count != 0 ) {
+            // sanity checks
+            if ( _videoDevices.Count != 0 && this.devicesCombo.SelectedIndex >= 0 ) {
                 // create _videoDevice object
-                _videoDevice = new VideoCaptureDevice(_videoDevices[devicesCombo.SelectedIndex].MonikerString);
+                _videoDevice = new VideoCaptureDevice(_videoDevices[this.devicesCombo.SelectedIndex].MonikerString);
                 // check and if needed, sync app _settings with camera props
                 evaluateCameraAndSettings();
             }
@@ -1236,7 +1275,7 @@ namespace GrzBeamProfiler
             //
             // loop as long as camera is running
             //
-            while ( _videoDevice.IsRunning ) {
+            while ( _videoDevice != null && _videoDevice.IsRunning ) {
 
                 // calc fps
                 DateTime now = DateTime.Now;
