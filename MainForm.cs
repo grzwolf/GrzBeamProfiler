@@ -61,6 +61,9 @@ namespace GrzBeamProfiler
 
         byte[] _bmpBkgnd = null;                         // background image to reduce the nose level around a beam
 
+        palette _pal = new palette();                    // pseudo color palette
+        AForge.Imaging.Filters.ColorRemapping _filter;   // pseudo color filter
+
         // one time init pens
         Pen _penEllipse = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
         Pen _thickRedPen = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
@@ -192,13 +195,13 @@ namespace GrzBeamProfiler
             System.Windows.Forms.Application.AddMessageFilter(this);
 
 // export pseudo color table
-#if DEBUG
-            string text = "";
-            for ( int i = 0; i < 256; i++ ) {
-                text += _pal.mapR[i].ToString() + ";" + _pal.mapG[i].ToString() + ";" + _pal.mapB[i].ToString() + "\r";
-            }
-            System.IO.File.WriteAllText("test.col", text);
-#endif
+//#if DEBUG
+//            string text = "";
+//            for ( int i = 0; i < 256; i++ ) {
+//                text += _pal.mapR[i].ToString() + ";" + _pal.mapG[i].ToString() + ";" + _pal.mapB[i].ToString() + "\r";
+//            }
+//            System.IO.File.WriteAllText("test.col", text);
+//#endif
 
         }
 
@@ -231,9 +234,10 @@ namespace GrzBeamProfiler
                 default:                                 _pal = buildPaletteSpectrum(); break;
             }
             this.pictureBoxPseudo.Image = bitmapFromPalette(_pal);
-            _settings.BeamMinimumDiameter = Math.Max(4, Math.Min(5000, _settings.BeamMinimumDiameter));
+            _filter = new AForge.Imaging.Filters.ColorRemapping(_pal.mapR, _pal.mapG, _pal.mapB);
 
             // beam characteristics
+            _settings.BeamMinimumDiameter = Math.Max(4, Math.Min(5000, _settings.BeamMinimumDiameter));
             updateBeamSearchOriginFromSettings();
             this.pictureBox_CmBeamDiameter.Text = "beam minimum diameter: " + _settings.BeamMinimumDiameter.ToString();
             this.pictureBox_CmBeamThreshold.Text = "beam power threshold: " + _settings.BeamPowerThreshold.ToString();
@@ -933,7 +937,6 @@ namespace GrzBeamProfiler
         }
 
         // allows gray images rendered with pseudo colors
-        palette _pal = new palette();
         Bitmap bitmapFromPalette(palette pal)
         {
             Bitmap bmp = new Bitmap(256, 20);
@@ -1142,7 +1145,7 @@ namespace GrzBeamProfiler
 
             return pal;
         }
-        System.Drawing.Image convertGrayToPseudoColors(Bitmap bitmap, bool wantPseudoColor, out ImageType imageType, out byte[] bmpArr, palette pal)
+        System.Drawing.Image convertGrayToPseudoColors(Bitmap bitmap, bool wantPseudoColor, AForge.Imaging.Filters.ColorRemapping filter, out ImageType imageType, out byte[] bmpArr)
         {
             // do we have a monochrome RGB image OR a colored RGB OR whatever
             imageType = bmpType(bitmap);
@@ -1165,7 +1168,6 @@ namespace GrzBeamProfiler
                 }
 
                 // apply AForge pseudo color filter
-                AForge.Imaging.Filters.ColorRemapping filter = new AForge.Imaging.Filters.ColorRemapping(pal.mapR, pal.mapG, pal.mapB);
                 bitmap = filter.Apply(bitmap);
             } else {
                 // leave bitmap untouched and return bitmap's native pixel values as array with color data
@@ -1320,7 +1322,7 @@ namespace GrzBeamProfiler
                     // generate pseudo color image if selected
                     excStep = 4;
                     if ( _settings.PseudoColors ) {
-                        _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, true, out _bmpImageType, out _bmpArr, _pal);
+                        _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, true, _filter, out _bmpImageType, out _bmpArr);
                     } else {
                         excStep = 5;
                         _bmpArr = GrzTools.BitmapTools.Bitmap24bppToByteArray(_bmp);
@@ -2706,7 +2708,7 @@ namespace GrzBeamProfiler
             }
             try {
                 // generate pseudo colors if selected
-                _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, _settings.PseudoColors, out _bmpImageType, out _bmpArr, _pal);
+                _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, _settings.PseudoColors, _filter, out _bmpImageType, out _bmpArr);
                 // show image in picturebox
                 this.pictureBox.Image = _bmp;
             } catch { ;}
