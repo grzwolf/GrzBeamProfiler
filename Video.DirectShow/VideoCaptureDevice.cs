@@ -621,8 +621,10 @@ namespace AForge.Video.DirectShow
             thread = null;
 
             // release events
-            stopEvent.Close();
-            stopEvent = null;
+            try {
+                stopEvent.Close();
+                stopEvent = null;
+            } catch ( Exception ) {;}
         }
 
         /// <summary>

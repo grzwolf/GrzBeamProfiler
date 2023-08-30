@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 // associated with an assembly.
 [assembly: AssemblyTitle("Beam Profiler")]
 [assembly: AssemblyDescription("Beam profile analysis with UVC camera.\r\n\r\n" +
-                               "- 1.0.0.0 release")]
+                               "- 2.0.0.0 release")]
 [assembly: AssemblyConfiguration( "" )]
 [assembly: AssemblyCompany( "GreatRock Enterprises, grzwolf.app@gmail.com" )]
 [assembly: AssemblyProduct( "" )]
@@ -32,5 +32,5 @@ using System.Runtime.InteropServices;
 // You can specify all the values or you can default the Build and Revision Numbers 
 // by using the '*' as shown below:
 // [assembly: AssemblyVersion("1.0.*")]
-[assembly: AssemblyVersion( "1.0.0.0" )]
-[assembly: AssemblyFileVersion( "1.0.0.0" )]
+[assembly: AssemblyVersion( "2.0.0.0" )]
+[assembly: AssemblyFileVersion( "2.0.0.0" )]

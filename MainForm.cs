@@ -5,16 +5,12 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Text;
 using System.Windows.Forms;
-using System.Runtime.InteropServices; // DLLImport
+using System.Runtime.InteropServices;                    // DLLImport
 using System.Linq;
 using AForge.Video.DirectShow;
 using System.Threading.Tasks;
-using System.Diagnostics;
-using AForge.Controls;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
-using static System.Net.Mime.MediaTypeNames;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.Window;
 using GrzBeamProfiler.Properties;
+using Emgu.CV;                                           // fit ellipse
 
 namespace GrzBeamProfiler
 {
@@ -22,52 +18,52 @@ namespace GrzBeamProfiler
     {
         AppSettings _settings = new AppSettings();       // app settings
 
+        string _headlineAlert = "";                      // headline alert message
+        bool _beamSearchError = false;
+
         private FilterInfoCollection _videoDevices;      // AForge collection of camera devices
         private VideoCaptureDevice _videoDevice = null;  // AForge camera device
+        bool _videoDeviceJustConnected = false;          // just connected means: the stage right after the camera was started, it ends after the first image was processed
+        double _fps = 0;                                 // camera fps
         private int _videoDeviceRestartCounter = 0;      // video device restart counter per app session
 
         private string _buttonConnectString;             // button text, a lame method to distinguish between camera "connect" vs. "- stop -" 
 
         Bitmap _bmp = null;                              // copy of current camera frame
         Size _bmpSize = new Size();                      // dimensions of current camera frame 
-        byte[] _bmpArr;                                  // all bmp pixel values in a separate array; allows fast access
-        ImageType _bmpImageType = ImageType.RGBColor;    // _bmp could be either 'colored RGB' or 'R=G=B=gray RGB'  
-        enum ImageType {                                 
-            RGBColor,
-            RGBGray,
-        }
+        byte[] _bmpArr;                                  // all bmp pixel values in a separate 8bpp array; allows fast access
 
-        Point _redCross = new Point();                   // red cross is the beam's centroid position, relative to canvas 
-        Point _redCrossLast = new Point();               //  - " - memorize red cross position after <ESC> / right click 
-        bool _redCrossFollowsBeam = true;                // flag controls whether red cross/ellipse will follow a moving beam
-        byte _centerGrayByte;                            // beam's center pixel's gray value 
+        Point _crosshairCenter = new Point();            // crosshair is the beam's ellipse center relative to canvas 
+        int _crosshairDiameterLast = 0;                  // last known crosshair diameter, needed if crosshair doesn't follow beam 
+        byte _beamPeakIntensity;                         // beam's peak gray value
+        ulong _beamEllipsePower;                         // calculated beam power according to FWHM / D86  
+        byte _beamEllipseBorderIntensity;                // pixel intensity on ellipse boder is used to determine to pen color
+        Point _peakCenterSub = new Point();              // peak intensity center point of subBeam 
 
-        Point _beamSearchOriginCurrent = new Point();    // memorize the current beam search offset, needed if white cross is hidden 
-        
-        bool _justConnected = false;                     // just connected means: the stage right after the camera was started, it ends after the first image was processed
-        double _fps = 0;                                 // camera fps
+        Point _beamSearchOriginCurrent = new Point();    // memorize the current beam search offset, needed if search origin's white cross is hidden 
 
-        bool _paintBusy = false;                         // busy flag in this.pictureBox_PaintWorker method
-        int _beamDiameter = 0;                           // beam diameter, actually made from the two ellipse axis  
         float _multiplierBmp2Paint;                      // multiplier between _bmp and tableLayoutPanelGraphs_Paint / pictureBox_MouseDown
-        Point[] _horProf;                                // beam horizontal pixel power profile
-        Point[] _verProf;                                // beam vertical pixel power profile
+        Point[] _horProf;                                // beam horizontal pixel intensity profile
+        Point[] _verProf;                                // beam vertical pixel intensity profile
 
         Task _socketTask;                                // another app can connect via network socket to GrzBeamProfiler to receive screenshots
         bool _runSocketTask = false;
         Bitmap _socketBmp = null;
 
-        EllipseParam _ep = new EllipseParam();           // the beam's standardized ellipse shape 
+        Emgu.CV.Structure.Ellipse _epCv;                 // the beam's standardized ellipse shape (FWHM, D86) 
 
-        byte[] _bmpBkgnd = null;                         // background image to reduce the nose level around a beam
+        Bitmap _bmpBkgnd = null;                         // background image to reduce the nose level around a beam
 
         palette _pal = new palette();                    // pseudo color palette
         AForge.Imaging.Filters.ColorRemapping _filter;   // pseudo color filter
 
-        // one time init pens
-        Pen _penEllipse = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
-        Pen _thickRedPen = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
-        Pen _thickYellowPen = new Pen(Color.FromArgb(255, 255, 255, 0), 3);
+        // init pens
+        Pen _crosshairPen = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
+        Pen _ellipsePen = new Pen(Color.FromArgb(255, 255, 0, 0), 3);
+        Pen _thresholdPen = new Pen(Color.FromArgb(255, 255, 255, 255), 1);
+        Color _ellipseColorInverted;
+
+        System.Diagnostics.Stopwatch _sw = new System.Diagnostics.Stopwatch();
 
         // the one and only way to avoid the 'red cross exception' in pictureBox: "wrong parameter" 
         public class PictureBoxPlus : System.Windows.Forms.PictureBox
@@ -83,17 +79,25 @@ namespace GrzBeamProfiler
         }
         private PictureBoxPlus pictureBox;
 
-        // pictureBox context menu vars
+        // pictureBox context menu 
         ContextMenu pictureBox_Cm = new ContextMenu();
+        MenuItem pictureBox_CmShowNative = new MenuItem("show native image");
         MenuItem pictureBox_CmShowCrosshair = new MenuItem("show crosshair (ESC toggles too)");
         MenuItem pictureBox_CmCrosshairFollowsBeam = new MenuItem("crosshair follows beam");
         MenuItem pictureBox_CmForceGray = new MenuItem("show gray color");
         MenuItem pictureBox_CmPseudoColors = new MenuItem("show pseudo color");
+        MenuItem pictureBox_CmEllipse = new MenuItem("show fitted ellipse");
+        MenuItem pictureBox_CmEllipsePoints = new MenuItem("show fitted ellipse intensity points");
+        MenuItem pictureBox_CmEllipsePointsHull = new MenuItem("show fitted ellipse intensity hull");
+        MenuItem pictureBox_CmBeamBorder = new MenuItem("show beam border");
+        MenuItem pictureBox_CmBeamPeak = new MenuItem("show beam peak intensity point");
+        MenuItem pictureBox_CmSearchTraces = new MenuItem("show beam search traces");
         MenuItem pictureBox_CmShowSearchOrigin = new MenuItem("show beam search origin");
-        MenuItem pictureBox_CmSearchCenter = new MenuItem("beam search center");
+        MenuItem pictureBox_CmSearchCenter = new MenuItem("beam search from center");
         MenuItem pictureBox_CmSearchManual = new MenuItem("beam search manual (SHIFT+left mouse)");
         MenuItem pictureBox_CmBeamDiameter = new MenuItem("");
-        MenuItem pictureBox_CmBeamThreshold = new MenuItem("beam power threshold: ");
+        MenuItem pictureBox_CmBeamThreshold = new MenuItem("");
+        MenuItem pictureBox_CmSwapProfiles = new MenuItem("swap intensity profile sections");
         Font cmFont = new Font(FontFamily.GenericSansSerif, 10);
         Point _mouseButtonDownDown; // allows to keep open (re show) the context menu after editing
 
@@ -129,11 +133,15 @@ namespace GrzBeamProfiler
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmBeamThreshold);
             this.pictureBox_CmBeamDiameter.Click += pictureBox_CmClickBeamDiameter;
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmBeamDiameter);
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmSwapProfiles);
+            this.pictureBox_CmSwapProfiles.Click += pictureBox_CmClickSwapProfiles;
             this.pictureBox_Cm.MenuItems.Add("-");
             cmi = new GrzTools.CustomMenuItem();
             cmi.Text = "Beam appearance";
             cmi.Font = cmFont;
             this.pictureBox_Cm.MenuItems.Add(cmi);
+            this.pictureBox_CmShowNative.Click += pictureBox_CmClickShowNative;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmShowNative);
             this.pictureBox_CmShowCrosshair.Checked = true;
             this.pictureBox_CmShowCrosshair.Click += pictureBox_CmClickShowCrosshair;
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmShowCrosshair);
@@ -141,6 +149,19 @@ namespace GrzBeamProfiler
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmForceGray);
             this.pictureBox_CmPseudoColors.Click += pictureBox_CmClickPseudoColors;
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmPseudoColors);
+            this.pictureBox_CmEllipse.Checked = true;
+            this.pictureBox_CmEllipse.Click += pictureBox_CmClickEllipse;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmEllipse);
+            this.pictureBox_CmBeamBorder.Click += pictureBox_CmClickBeamBorder;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmBeamBorder);
+            this.pictureBox_CmEllipsePoints.Click += pictureBox_CmClickEllipsePoints;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmEllipsePoints);
+            this.pictureBox_CmEllipsePointsHull.Click += pictureBox_CmClickEllipsePointsHull;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmEllipsePointsHull);
+            this.pictureBox_CmSearchTraces.Click += pictureBox_CmClickSearchTraces;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmSearchTraces);
+            this.pictureBox_CmBeamPeak.Click += pictureBox_CmClickBeamPeak;
+            this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmBeamPeak);
             this.pictureBox_CmCrosshairFollowsBeam.Checked = true;
             this.pictureBox_CmCrosshairFollowsBeam.Click += pictureBox_CmClickCrosshaisFollowsBeam;
             this.pictureBox_Cm.MenuItems.Add(this.pictureBox_CmCrosshairFollowsBeam);
@@ -165,15 +186,18 @@ namespace GrzBeamProfiler
                              System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 .SetValue(this.tableLayoutPanelGraphs, true, null);
 
-            // memorize the connect button text
+            // memorize the connect button text, abused as status flag
             _buttonConnectString = this.connectButton.Text;
 
             // add "about entry" to system menu
             SetupSystemMenu();
 
             // get background image from file, if existing
-            if ( System.IO.File.Exists("BackGroundImage.bin") ) {
-                _bmpBkgnd = System.IO.File.ReadAllBytes("BackGroundImage.bin");
+            if ( System.IO.File.Exists("BackGroundImage.bmp") ) {
+                _bmpBkgnd = new Bitmap("BackGroundImage.bmp");
+                if ( _bmpBkgnd.PixelFormat != PixelFormat.Format24bppRgb ) {
+                    _bmpBkgnd = GrzTools.BitmapTools.ConvertTo24bpp(_bmpBkgnd);
+                }
             }
 
             // get settings from INI
@@ -194,15 +218,6 @@ namespace GrzBeamProfiler
             // - also needed: Application.RemoveMessageFilter(this) when closing this form
             System.Windows.Forms.Application.AddMessageFilter(this);
 
-// export pseudo color table
-//#if DEBUG
-//            string text = "";
-//            for ( int i = 0; i < 256; i++ ) {
-//                text += _pal.mapR[i].ToString() + ";" + _pal.mapG[i].ToString() + ";" + _pal.mapB[i].ToString() + "\r";
-//            }
-//            System.IO.File.WriteAllText("test.col", text);
-//#endif
-
         }
 
         // update app from settings
@@ -213,8 +228,11 @@ namespace GrzBeamProfiler
             this.Location = _settings.FormLocation;
 
             // context menu
+            this.pictureBox_CmBeamBorder.Checked = _settings.BeamBorder;
+            this.pictureBox_CmBeamPeak.Checked = _settings.BeamPeak;
             this.pictureBox_CmForceGray.Checked = _settings.ForceGray;
             this.pictureBox_CmPseudoColors.Checked = _settings.PseudoColors;
+            this.pictureBox_CmSwapProfiles.Checked = _settings.SwapProfiles;
 
             // update exposure and brightness scrollers
             this.hScrollBarExposure.Minimum = _settings.ExposureMin;
@@ -227,7 +245,7 @@ namespace GrzBeamProfiler
             updateExposureUI();
             updateBrightnessUI();
 
-            // pseudo color table is special
+            // pseudo color table
             switch ( _settings.PseudoColorTable ) {
                 case AppSettings.ColorTable.TEMPERATURE: _pal = buildPaletteTemperature(); break;
                 case AppSettings.ColorTable.RAINBOW:     _pal = buildPaletteSpectrum(); break;
@@ -240,7 +258,7 @@ namespace GrzBeamProfiler
             _settings.BeamMinimumDiameter = Math.Max(4, Math.Min(5000, _settings.BeamMinimumDiameter));
             updateBeamSearchOriginFromSettings();
             this.pictureBox_CmBeamDiameter.Text = "beam minimum diameter: " + _settings.BeamMinimumDiameter.ToString();
-            this.pictureBox_CmBeamThreshold.Text = "beam power threshold: " + _settings.BeamPowerThreshold.ToString();
+            this.pictureBox_CmBeamThreshold.Text = "beam intensity threshold: " + _settings.BeamIntensityThreshold.ToString();
 
             // init logger
             GrzTools.Logger.FullFileNameBase = System.Windows.Forms.Application.ExecutablePath; // option: if useful, could be set to another location
@@ -251,12 +269,6 @@ namespace GrzBeamProfiler
                 if ( _bmpBkgnd == null ) {
                     MessageBox.Show("Please capture a background image, otherwise backgound subtraction doesn't work.");
                 }
-            } else {
-                _bmpBkgnd = new byte[0];
-                _bmpBkgnd = null;
-                if ( System.IO.File.Exists("BackGroundImage.bin") ) {
-                    System.IO.File.Delete("BackGroundImage.bin");
-                }
             }
         }
 
@@ -266,6 +278,7 @@ namespace GrzBeamProfiler
             _settings.FormSize = this.Size;
             _settings.FormLocation = this.Location;
             _settings.ForceGray = this.pictureBox_CmForceGray.Checked;
+            _settings.SwapProfiles = this.pictureBox_CmSwapProfiles.Checked;
             _settings.PseudoColors = this.pictureBox_CmPseudoColors.Checked;
             _settings.Exposure = this.hScrollBarExposure.Value;
             _settings.ExposureMin = this.hScrollBarExposure.Minimum;
@@ -281,11 +294,11 @@ namespace GrzBeamProfiler
         //
         void pictureBox_CmClickBeamThreshold(object sender, EventArgs e) {
             string retVal;
-            DialogResult dr = GrzTools.InputDialog.GetText("Beam power threshold", _settings.BeamPowerThreshold.ToString(), this, out retVal);
+            DialogResult dr = GrzTools.InputDialog.GetText("Beam intensity threshold", _settings.BeamIntensityThreshold.ToString(), this, out retVal);
             int intVal;
             int.TryParse(retVal, out intVal);
-            _settings.BeamPowerThreshold = Math.Min(250, Math.Max(10, intVal));
-            this.pictureBox_CmBeamThreshold.Text = "beam power threshold: " + _settings.BeamPowerThreshold.ToString();
+            _settings.BeamIntensityThreshold = Math.Min(250, Math.Max(10, intVal));
+            this.pictureBox_CmBeamThreshold.Text = "beam intensity threshold: " + _settings.BeamIntensityThreshold.ToString();
             if ( dr == DialogResult.OK ) {
                 // keep context menu open
                 pictureBox_Cm.Show(pictureBox, _mouseButtonDownDown);
@@ -303,28 +316,120 @@ namespace GrzBeamProfiler
                 // keep context menu open
                 pictureBox_Cm.Show(pictureBox, _mouseButtonDownDown);
             }
+            _beamSearchError = false;
         }
-        void pictureBox_CmClickShowCrosshair(object sender, EventArgs e) {
-            if ( _videoDevice != null && _videoDevice.IsRunning ) {
-                toggleCrossHairVisibility();
+        void pictureBox_CmClickSwapProfiles(object sender, EventArgs e) {
+            _settings.SwapProfiles = !_settings.SwapProfiles;
+            ((MenuItem)sender).Checked = _settings.SwapProfiles;
+        }
+        void pictureBox_CmClickShowNative(object sender, EventArgs e) {
+            ((MenuItem)sender).Checked = !((MenuItem)sender).Checked;
+            if ( ((MenuItem)sender).Checked ) {
+                // disable
+                this.pictureBox_CmShowCrosshair.Enabled = false;
+                this.pictureBox_CmEllipse.Enabled = false;
+                this.pictureBox_CmPseudoColors.Enabled = false;
+                this.pictureBox_CmForceGray.Enabled = false;
+                this.pictureBox_CmSearchTraces.Enabled = false;
+                this.pictureBox_CmEllipsePoints.Enabled = false;
+                this.pictureBox_CmEllipsePointsHull.Enabled = false;
+                this.pictureBox_CmBeamBorder.Enabled = false;
+                this.pictureBox_CmBeamPeak.Enabled = false;
             } else {
-                MessageBox.Show("Only changeable, if camera is running.", "Info");
+                // enable
+                this.pictureBox_CmShowCrosshair.Enabled = true;
+                this.pictureBox_CmEllipse.Enabled = true;
+                this.pictureBox_CmPseudoColors.Enabled = true;
+                this.pictureBox_CmForceGray.Enabled = true;
+                this.pictureBox_CmSearchTraces.Enabled = true;
+                this.pictureBox_CmEllipsePoints.Enabled = true;
+                this.pictureBox_CmEllipsePointsHull.Enabled = true;
+                this.pictureBox_CmBeamBorder.Enabled = true;
+                this.pictureBox_CmBeamPeak.Enabled = true;
             }
         }
+        void pictureBox_CmClickShowCrosshair(object sender, EventArgs e) {
+            _settings.Crosshair = !_settings.Crosshair;
+            ((MenuItem)sender).Checked = _settings.Crosshair;
+        }
         void pictureBox_CmClickCrosshaisFollowsBeam(object sender, EventArgs e) {
-            _redCrossFollowsBeam = !_redCrossFollowsBeam;
-            ((MenuItem)sender).Checked = _redCrossFollowsBeam;
+            _settings.FollowBeam = !_settings.FollowBeam;
+            ((MenuItem)sender).Checked = _settings.FollowBeam;
             headLine();
         }
         void pictureBox_CmClickForceGray(object sender, EventArgs e) {
             _settings.ForceGray = !_settings.ForceGray;
             ((MenuItem)sender).Checked = _settings.ForceGray;
+            if ( _settings.ForceGray ) {
+                this.pictureBox_CmPseudoColors.Checked = false;
+                _settings.PseudoColors = false;
+            }
         }
         void pictureBox_CmClickPseudoColors(object sender, EventArgs e) {
             _settings.PseudoColors = !_settings.PseudoColors;
             ((MenuItem)sender).Checked = _settings.PseudoColors;
+            if ( _settings.PseudoColors ) {
+                this.pictureBox_CmForceGray.Checked = false;
+                _settings.ForceGray = false;
+            }
         }
-        // hide beam search origin BUT keep the previously selected origin
+        void pictureBox_CmClickEllipse(object sender, EventArgs e) {
+            _settings.Ellipse = !_settings.Ellipse;
+            ((MenuItem)sender).Checked = _settings.Ellipse;
+        }
+        void pictureBox_CmClickBeamPeak(object sender, EventArgs e) {
+            _settings.BeamPeak = !_settings.BeamPeak;
+            ((MenuItem)sender).Checked = _settings.BeamPeak;
+        }
+        void pictureBox_CmClickBeamBorder(object sender, EventArgs e) {
+            _settings.BeamBorder = !_settings.BeamBorder;
+            ((MenuItem)sender).Checked = _settings.BeamBorder;
+            if ( _settings.BeamBorder ) {
+                this.pictureBox_CmSearchTraces.Checked = false;
+                _settings.SearchTraces = false;
+                this.pictureBox_CmEllipsePoints.Checked = false;
+                _settings.EllipsePower = false;
+                this.pictureBox_CmEllipsePointsHull.Checked = false;
+                _settings.EllipsePointsHull = false;
+            }
+        }
+        void pictureBox_CmClickSearchTraces(object sender, EventArgs e) {
+            _settings.SearchTraces = !_settings.SearchTraces;
+            ((MenuItem)sender).Checked = _settings.SearchTraces;
+            if ( _settings.SearchTraces ) {
+                this.pictureBox_CmBeamBorder.Checked = false;
+                _settings.BeamBorder = false;
+                this.pictureBox_CmEllipsePoints.Checked = false;
+                _settings.EllipsePower = false;
+                this.pictureBox_CmEllipsePointsHull.Checked = false;
+                _settings.EllipsePointsHull = false;
+            }
+        }
+        void pictureBox_CmClickEllipsePoints(object sender, EventArgs e) {
+            _settings.EllipsePower = !_settings.EllipsePower;
+            ((MenuItem)sender).Checked = _settings.EllipsePower;
+            if ( _settings.EllipsePower ) {
+                this.pictureBox_CmBeamBorder.Checked = false;
+                _settings.BeamBorder = false;
+                this.pictureBox_CmSearchTraces.Checked = false;
+                _settings.SearchTraces = false;
+                this.pictureBox_CmEllipsePointsHull.Checked = false;
+                _settings.EllipsePointsHull = false;
+            }
+        }
+        void pictureBox_CmClickEllipsePointsHull(object sender, EventArgs e) {
+            _settings.EllipsePointsHull = !_settings.EllipsePointsHull;
+            ((MenuItem)sender).Checked = _settings.EllipsePointsHull;
+            if ( _settings.EllipsePointsHull ) {
+                this.pictureBox_CmBeamBorder.Checked = false;
+                _settings.BeamBorder = false;
+                this.pictureBox_CmSearchTraces.Checked = false;
+                _settings.SearchTraces = false;
+                this.pictureBox_CmEllipsePoints.Checked = false;
+                _settings.EllipsePower = false;
+            }
+        }
+        // hide beam search origin but keep the previously selected origin
         void pictureBox_CmClickShowSearchOrigin(object sender, EventArgs e) {
             ((MenuItem)sender).Checked = !((MenuItem)sender).Checked;
             updateSettingsFromApp();
@@ -379,7 +484,7 @@ namespace GrzBeamProfiler
                     }
             }
         }
-        // settings from beam search status
+        // update _settings from beam search status
         void updateSettingsFromBeamSearchOrigin() {
             // show beam search origin
             if ( pictureBox_CmShowSearchOrigin.Checked ) {
@@ -411,8 +516,6 @@ namespace GrzBeamProfiler
             getCameraBasics();
             // some controls
             EnableConnectionControls(true);
-            // crossHair location
-            _redCrossLast = new Point(this.pictureBox.Size.Width/2, this.pictureBox.Size.Height/2);
             // pictureBox gives a hint
             if ( Resources.start != null ) {
                 pictureBox.Image = new Bitmap(Resources.start);
@@ -465,7 +568,7 @@ namespace GrzBeamProfiler
                 }
             }
 
-            // only null at 1st enter
+            // null at 1st enter OR camera disappeared
             if ( _videoDevice == null ) {
                 // selecting an index automatically calls devicesCombo_SelectedIndexChanged(..), which creates a new _videoDevice
                  this.devicesCombo.SelectedIndex = indexToSelect; 
@@ -483,7 +586,7 @@ namespace GrzBeamProfiler
                         // do not select any other available camera
                         ;
                         // leave note
-                        MessageBox.Show("No camera according to app settings was found.", "Note");
+                        MessageBox.Show("No camera according to app settings found.", "Note");
                     } else {
                         // re select most recent camera, despite of other cameras
                         this.devicesCombo.SelectedIndexChanged -= new System.EventHandler(this.devicesCombo_SelectedIndexChanged);
@@ -505,9 +608,6 @@ namespace GrzBeamProfiler
         {
             // stop screenshot providing network socket server
             _runSocketTask = false;
-
-            // immediately stop rendering images
-            _paintBusy = true;
 
             // IMessageFilter
             System.Windows.Forms.Application.RemoveMessageFilter(this);
@@ -546,25 +646,25 @@ namespace GrzBeamProfiler
         // check and if needed, sync _settings with camera props
         void evaluateCameraAndSettings() {
             // camera or its properties might have changed: update _settings accordingly
-            string change = "";
+            _headlineAlert = "";
             // _videoDevice moniker may not match to app _settings
             if ( _settings.CameraMoniker != _videoDevices[devicesCombo.SelectedIndex].MonikerString ) {
                 _settings.CameraMoniker = _videoDevices[devicesCombo.SelectedIndex].MonikerString;
-                change = "model";
+                _headlineAlert = "model";
             }
             // _videoDevice resolution may not match to app _settings
             if ( !evaluateCameraFrameSizes(_videoDevice) ) {
-                change += change.Length > 0 ? ", " : "";
-                change += "resolution";
+                _headlineAlert += _headlineAlert.Length > 0 ? ", " : "";
+                _headlineAlert += "resolution";
             }
             // _videoDevice exposure / brightness may not match to app _settings
             if ( !evaluateCameraExposureBrightnessProps() ) {
-                change += change.Length > 0 ? ", " : "";
-                change += "exposure";
+                _headlineAlert += _headlineAlert.Length > 0 ? ", " : "";
+                _headlineAlert += "exposure";
             }
             // camera vs. _settings mismatch note
-            if ( change.Length > 0 ) {
-                MessageBox.Show(String.Format("Camera '{0}' did not match to app settings, latter are now updated.", change), "Note");
+            if ( _headlineAlert.Length > 0 ) {
+                _headlineAlert = String.Format("Camera '{0}' did not match to app settings, latter are now updated.", _headlineAlert);
             }
         }
 
@@ -612,7 +712,8 @@ namespace GrzBeamProfiler
             // get altered video resolution
             if ( (_videoDevice.VideoCapabilities != null) && (_videoDevice.VideoCapabilities.Length != 0) ) {
                 _videoDevice.VideoResolution = _videoDevice.VideoCapabilities[this.videoResolutionsCombo.SelectedIndex];
-                _settings.CameraResolution = new Size(_videoDevice.VideoCapabilities[this.videoResolutionsCombo.SelectedIndex].FrameSize.Width, _videoDevice.VideoCapabilities[this.videoResolutionsCombo.SelectedIndex].FrameSize.Height);
+                _settings.CameraResolution = new Size(_videoDevice.VideoCapabilities[this.videoResolutionsCombo.SelectedIndex].FrameSize.Width, 
+                                                      _videoDevice.VideoCapabilities[this.videoResolutionsCombo.SelectedIndex].FrameSize.Height);
             }
         }
 
@@ -628,27 +729,38 @@ namespace GrzBeamProfiler
             ResetExceptionState(this.pictureBox);
 
             if ( (_buttonConnectString == this.connectButton.Text) && (sender != null) ) {
+                // clear alert msg
+                _headlineAlert = "";
+                _beamSearchError = false;
                 // connect to camera if feasible
                 if ( (_videoDevice == null) || (_videoDevice.VideoCapabilities == null) || (_videoDevice.VideoCapabilities.Length == 0) || (this.videoResolutionsCombo.Items.Count == 0) ) {
                     return;
                 }
-                _paintBusy = false;
                 _videoDevice.VideoResolution = _videoDevice.VideoCapabilities[videoResolutionsCombo.SelectedIndex];
                 _videoDevice.Start();
-                _justConnected = true;
+                _videoDeviceJustConnected = true;
                 _videoDevice.NewFrame += new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
 
-                // fire & forget: in case, the _videoDevice won't start within 10s or _justConnected is still true (aka no videoDevice_NewFrame event)
+                // crosshair and ellipse pen thickness
+                if ( _videoDevice.VideoResolution.FrameSize.Width <= 1024 ) {
+                    _crosshairPen.Width = 1;
+                    _ellipsePen.Width = 1;
+                } else {
+                    _crosshairPen.Width = 3;
+                    _ellipsePen.Width = 3;
+                }
+
+                // fire & forget: in case, the _videoDevice won't start within 10s or _videoDeviceJustConnected is still true (aka no videoDevice_NewFrame event)
                 Task.Delay(10000).ContinueWith(t => {
                     Invoke(new Action(async () => {
                         // trigger for delayed action: camera is clicked on, aka  shows '- stop -'  AND camera is not running OR no new frame event happened
-                        if ( _buttonConnectString != this.connectButton.Text && (!_videoDevice.IsRunning || _justConnected) ) {
+                        if ( _buttonConnectString != this.connectButton.Text && (!_videoDevice.IsRunning || _videoDeviceJustConnected) ) {
                             if ( _videoDeviceRestartCounter < 5 ) {
                                 _videoDeviceRestartCounter++;
                                 if ( !_videoDevice.IsRunning ) {
                                     GrzTools.Logger.logTextLn(DateTime.Now, String.Format("connectButton_Click: _videoDevice is not running"));
                                 }
-                                if ( _justConnected ) {
+                                if ( _videoDeviceJustConnected ) {
                                     GrzTools.Logger.logTextLn(DateTime.Now, String.Format("connectButton_Click: no videoDevice_NewFrame event received"));
                                 }
                                 // stop camera 
@@ -947,7 +1059,7 @@ namespace GrzBeamProfiler
             }
             return bmp;
         }
-        class palette
+        public class palette
         {
             public byte[] mapR = new byte[256];
             public byte[] mapG = new byte[256];
@@ -1053,6 +1165,12 @@ namespace GrzBeamProfiler
             }
 
             // make sure white
+            pal.mapR[253] = 255;
+            pal.mapG[253] = 255;
+            pal.mapB[253] = 255;
+            pal.mapR[254] = 255;
+            pal.mapG[254] = 255;
+            pal.mapB[254] = 255;
             pal.mapR[255] = 255;
             pal.mapG[255] = 255;
             pal.mapB[255] = 255;
@@ -1139,91 +1257,22 @@ namespace GrzBeamProfiler
             }
 
             // make sure white
+            pal.mapR[253] = 255;
+            pal.mapG[253] = 255;
+            pal.mapB[253] = 255;
+            pal.mapR[254] = 255;
+            pal.mapG[254] = 255;
+            pal.mapB[254] = 255;
             pal.mapR[255] = 255;
             pal.mapG[255] = 255;
             pal.mapB[255] = 255;
 
             return pal;
         }
-        System.Drawing.Image convertGrayToPseudoColors(Bitmap bitmap, bool wantPseudoColor, AForge.Imaging.Filters.ColorRemapping filter, out ImageType imageType, out byte[] bmpArr)
-        {
-            // do we have a monochrome RGB image OR a colored RGB OR whatever
-            imageType = bmpType(bitmap);
-
-            // generate pseudo colors from a gray image
-            if ( wantPseudoColor ) {
-                // if bitmap is not yet gray, convert it to gray 
-                if ( imageType == ImageType.RGBColor ) {
-                    bitmap = MakeGrayscaleGDI(bitmap);
-                }
-                // have all bitmap data in a separate byte array 
-                bmpArr = GrzTools.BitmapTools.Bitmap24bppToByteArray(bitmap);
-
-                // exec background subtraction and build a new bitmap from it
-                if ( _settings.SubtractBackgroundImage && (_bmpBkgnd != null) && (bmpArr.Length == _bmpBkgnd.Length) ) {
-                    for ( int i = 0; i < bmpArr.Length; i++ ) {
-                        bmpArr[i] = (byte)Math.Max(0, (int)bmpArr[i] - (int)_bmpBkgnd[i]);
-                    }
-                    bitmap = GrzTools.BitmapTools.ByteArrayToBitmap(_bmpSize.Width, _bmpSize.Height, bmpArr);
-                }
-
-                // apply AForge pseudo color filter
-                bitmap = filter.Apply(bitmap);
-            } else {
-                // leave bitmap untouched and return bitmap's native pixel values as array with color data
-                bmpArr = GrzTools.BitmapTools.Bitmap24bppToByteArray(bitmap);
-                // exec background subtraction and build a new bitmap from it
-                if ( _settings.SubtractBackgroundImage && (_bmpBkgnd != null) && (bmpArr.Length == _bmpBkgnd.Length) ) {
-                    for ( int i = 0; i < bmpArr.Length; i++ ) {
-                        bmpArr[i] = (byte)Math.Max(0, (int)bmpArr[i] - (int)_bmpBkgnd[i]);
-                    }
-                    bitmap = GrzTools.BitmapTools.ByteArrayToBitmap(_bmpSize.Width, _bmpSize.Height, bmpArr);
-                }
-            }
-
-            return bitmap;
-        }
-
-        // lame 5 pixel test whether a bitmap is "3x identical gray" or colored RGB 
-        ImageType bmpType(Bitmap bitmap)
-        {
-            ImageType type = ImageType.RGBColor;
-            Color c = bitmap.GetPixel(10, 10);
-            if ( (c.R == c.G) && (c.R == c.B) ) {
-                type = ImageType.RGBGray;
-                c = bitmap.GetPixel(bitmap.Width-10, 10);
-                if ( (c.R == c.G) && (c.R == c.B) ) {
-                    type = ImageType.RGBGray;
-                    c = bitmap.GetPixel(bitmap.Width-10, bitmap.Height-10);
-                    if ( (c.R == c.G) && (c.R == c.B) ) {
-                        type = ImageType.RGBGray;
-                        c = bitmap.GetPixel(10, bitmap.Height-10);
-                        if ( (c.R == c.G) && (c.R == c.B) ) {
-                            type = ImageType.RGBGray;
-                            c = bitmap.GetPixel(bitmap.Width / 2, bitmap.Height / 2);
-                            if ( (c.R == c.G) && (c.R == c.B) ) {
-                                type = ImageType.RGBGray;
-                            } else {
-                                type = ImageType.RGBColor;
-                            }
-                        } else {
-                            type = ImageType.RGBColor;
-                        }
-                    } else {
-                        type = ImageType.RGBColor;
-                    }
-                } else {
-                    type = ImageType.RGBColor;
-                }
-            } else {
-                type = ImageType.RGBColor; ;
-            }
-            return type;
-        }
 
         // Bitmap ring buffer for 5 images
         static class BmpRingBuffer {
-            private static Bitmap[] bmpArr = new Bitmap[] { new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1) };
+            private static Bitmap[] bmpArray = new Bitmap[] { new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1), new Bitmap(1, 1) };
             private static int bmpNdx = 0;
             // public get & set
             public static Bitmap bmp {
@@ -1233,12 +1282,12 @@ namespace GrzBeamProfiler
                     if ( prevNdx < 0 ) {
                         prevNdx = 4;
                     }
-                    return bmpArr[prevNdx];
+                    return bmpArray[prevNdx];
                 }
                 // override bmp in array and increase array index
                 set {
-                    bmpArr[bmpNdx].Dispose();
-                    bmpArr[bmpNdx] = value;
+                    bmpArray[bmpNdx].Dispose();
+                    bmpArray[bmpNdx] = value;
                     bmpNdx++;
                     if ( bmpNdx > 4 ) {
                         bmpNdx = 0;
@@ -1251,11 +1300,25 @@ namespace GrzBeamProfiler
         void videoDevice_NewFrame(object sender, AForge.Video.NewFrameEventArgs eventArgs)
         {
             try {
+
+                // make sure correct pixel format
+                Bitmap bmp = (Bitmap)eventArgs.Frame.Clone();
+
+                if ( bmp.PixelFormat != PixelFormat.Format24bppRgb ) {
+                    bmp = GrzTools.BitmapTools.ConvertTo24bpp(bmp);
+                }
+
                 // put latest image into ring buffer
-                BmpRingBuffer.bmp = (Bitmap)eventArgs.Frame.Clone();
+                BmpRingBuffer.bmp = bmp;
 
                 // action after the first received image 
-                if ( _justConnected ) {
+                if ( _videoDeviceJustConnected ) {
+
+                    // wrong image format
+                    if ( BmpRingBuffer.bmp.PixelFormat != PixelFormat.Format24bppRgb ) {
+                        MessageBox.Show("If possible, camera shall provide 'PixelFormat.Format24bppRgb'.", "Note");
+                    }
+
                     //
                     // start image processing outside of UI, no need to wait for completion 
                     //
@@ -1273,6 +1336,9 @@ namespace GrzBeamProfiler
             // stopwatch
             System.Diagnostics.Stopwatch swFrameProcessing = new System.Diagnostics.Stopwatch();
             DateTime lastFrameTime = DateTime.Now;
+            long procMs = 0;
+            int excStep = -1;
+            bool bmpArrFilled = false;
 
             //
             // loop as long as camera is running
@@ -1284,8 +1350,9 @@ namespace GrzBeamProfiler
                 double revFps = (double)(now - lastFrameTime).TotalMilliseconds;
                 lastFrameTime = now;
                 _fps = 1000.0f / revFps;
-                long procMs = 0;
-                int excStep = -1;
+                procMs = 0;
+                excStep = -1;
+                bmpArrFilled = false;
 
                 // prepare to measure consumed time for image processing
                 swFrameProcessing.Restart();
@@ -1306,64 +1373,97 @@ namespace GrzBeamProfiler
 
                     // action after the first received image 
                     excStep = 2;
-                    if ( _justConnected ) {
+                    if ( _videoDeviceJustConnected ) {
                         // reset flag
-                        _justConnected = false;
+                        _videoDeviceJustConnected = false;
                         // if 1st time connected, adjust the canvas matching to the presumable new aspect ratio of the bmp
-                        Invoke(new Action(() => { adjustMainFormSize(_bmpSize); }));
+                        Invoke(new Action(() => adjustMainFormSize(_bmpSize) ));
+                        // init just once
+                        _bmpArr = new byte[_bmp.Width * _bmp.Height];
                     }
 
+                    // show native image only
+                    if ( this.pictureBox_CmShowNative.Checked ) {
+                        _headlineAlert = "native camera image";
+                        this.pictureBox.Image = _bmp;
+                        continue;
+                    }
+
+#if DEBUG
+                    long initTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
+
+                    // exec background subtraction and build a new bitmap from it
+                    excStep = 3;
+                    if ( _settings.SubtractBackgroundImage && _bmpBkgnd != null ) {
+                        GrzTools.BitmapTools.SubtractBitmap24bppToBitmap24bpp(ref _bmp, _bmpBkgnd);
+                    }
+#if DEBUG
+                    long bkgndTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
                     // force monochrome camera image
-                    excStep = 3; 
+                    excStep = 4; 
                     if ( _settings.ForceGray ) {
-                        _bmp = MakeGrayscaleGDI(_bmp);
+                        GrzTools.BitmapTools.Bmp24bppColorToBmp24bppGrayToArray8bppGray(ref _bmp, ref _bmpArr);
+                        bmpArrFilled = true;
                     }
-
+# if DEBUG
+                    long grayTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
                     // generate pseudo color image if selected
-                    excStep = 4;
+                    excStep = 5;
                     if ( _settings.PseudoColors ) {
-                        _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, true, _filter, out _bmpImageType, out _bmpArr);
-                    } else {
-                        excStep = 5;
-                        _bmpArr = GrzTools.BitmapTools.Bitmap24bppToByteArray(_bmp);
+                        GrzTools.BitmapTools.Bmp24bppColorToBmp24bppPseudoToArray8bppGray(ref _bmp, _pal, ref _bmpArr);
+                        bmpArrFilled = true;
                     }
-
-                    // _bmpArr is null, if both previous steps 3 and 4 are unchecked
-                    if ( _bmpArr == null ) {
-                        excStep = 5;
-                        _bmpArr = GrzTools.BitmapTools.Bitmap24bppToByteArray(_bmp);
-                    }
-
-                    // dispose the previous image
+#if DEBUG
+                    long pseudoTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
+                    // ensure array 24bpp gray
                     excStep = 6;
+                    if ( !bmpArrFilled ) {
+                        GrzTools.BitmapTools.Bmp24bppColorToArray8bppGray(_bmp, ref _bmpArr);
+                        bmpArrFilled = true;
+                    }
+#if DEBUG
+                    long arrayTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
+                    // dispose the previous image
+                    excStep = 7;
                     if ( this.pictureBox.Image != null ) {
                         this.pictureBox.Image.Dispose();
                     }
 
-                    //
-                    // show current image in pictureBox: all image processing takes place in pictureBox_PaintWorker
-                    //
-                    excStep = 7;
+                    // full image processing: heavily modifies _bmp
+                    excStep = 8;
+                    await Task.Run(() => pictureBox_PaintWorker());
+#if DEBUG
+                    long workerTime = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Restart();
+#endif
+                    excStep = 9;
                     Invoke(new Action(() => {
-                        // image processing needs at least gray scale, pseudo color is optional 
-                        if ( _settings.ForceGray ) {
-                            // full image processing: heavily modifies _bmp
-                            pictureBox_PaintWorker();
-                        } else {
-                            // w/o gray scale only show native frame, with empty profile scales
-                            this.tableLayoutPanelGraphs.Invalidate(false);
-                            this.tableLayoutPanelGraphs.Update();
-                        }
                         // set _bmp to pictureBox
-                        this.pictureBox.Image = (Bitmap)_bmp.Clone();
+                        Task.Run(() => this.pictureBox.Image = (Bitmap)_bmp.Clone());
                     }));
 
                     // get process time in ms
+#if DEBUG
+                    long paintTime = swFrameProcessing.ElapsedMilliseconds;
+                    procMs = initTime + bkgndTime + grayTime + pseudoTime + arrayTime + workerTime + paintTime;
                     swFrameProcessing.Stop();
+#else
                     procMs = swFrameProcessing.ElapsedMilliseconds;
+                    swFrameProcessing.Stop();
+#endif
 
                     // update window title
-                    excStep = 8;
+                    excStep = 10;
                     Invoke(new Action(() => {
                         headLine();
                     }));
@@ -1377,14 +1477,14 @@ namespace GrzBeamProfiler
             }
         }
 
-        // added to the current video frame output on screen: extended red cross axis + vertical & horizontal power profiles
+        // added to the current video frame output on screen: extended crosshair axis + vertical & horizontal power profiles
         private void tableLayoutPanelGraphs_Paint(object sender, PaintEventArgs e)
         {
-            // power profile areas will render on a black background to the left and bottom of camera image
+            // intensity profile areas will render on a black background to the left and bottom of camera image
             e.Graphics.FillRectangle(Brushes.Black, new Rectangle(0, 0, 104, this.tableLayoutPanelGraphs.ClientSize.Height));
             e.Graphics.FillRectangle(Brushes.Black, new Rectangle(0, this.tableLayoutPanelGraphs.ClientSize.Height - 104, this.tableLayoutPanelGraphs.ClientSize.Width, 104));
 
-            // 2x power intensity axis scaling
+            // 2x intensity axis scaling
             Pen pen = new Pen(Brushes.Gray);
             pen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
             for ( int i = 0; i < 6; i++ ) {
@@ -1392,67 +1492,66 @@ namespace GrzBeamProfiler
                 e.Graphics.DrawLine(pen, new Point(104, this.tableLayoutPanelGraphs.ClientSize.Height - 20 * i - 1), new Point(this.tableLayoutPanelGraphs.ClientSize.Width, this.tableLayoutPanelGraphs.ClientSize.Height - 20 * i - 1));
             }
 
-            // get out in case of native, unmodified frame
-            if ( !_settings.ForceGray && !_settings.PseudoColors ) {
-                return;
-            }
-
-            // render the beam power profiles _horProf & _verProf, previously generated in pictureBox_PaintWorker
+            // render the beam intensity profile arrays _horProf & _verProf contain _bmp coordinates, previously generated in pictureBox_PaintWorker
             int ofs;
             try {
-                // show power profiles along both ellipse's main axis
-                if ( (_horProf != null) && (_horProf.Length > 0) ) {
-                    Point[] points = new Point[_horProf.Length];
-                    int ndx = 0;
-                    double lastX = 0;
-                    double gray, xpos, ypos;
-                    foreach ( Point pt in _horProf ) {
-                        ofs = pt.Y * _bmpSize.Width * 3 + pt.X * 3;
-                        if ( (ofs > 0) && (ofs < _bmpArr.Length) ) {
-                            gray = _bmpArr[ofs];
-                            if ( _bmpImageType == ImageType.RGBColor ) {
-                                gray = 0.2125 * (double)(_bmpArr[ofs + 2]) + 0.7154 * (double)(_bmpArr[ofs + 1]) + 0.0721 * (double)(_bmpArr[ofs + 0]);
+                if ( _epCv.RotatedRect.Center.X > 0 ) {
+                    // show intensity profiles along both ellipse's main axis
+                    if ( (_horProf != null) && (_horProf.Length > 0) ) {
+                        Point[] points = new Point[_horProf.Length];
+                        int ndx = 0;
+                        double lastX = 0;
+                        double gray, xpos, ypos;
+                        foreach ( Point pt in _horProf ) {
+                            ofs = pt.Y * _bmpSize.Width + pt.X;
+                            if ( (ofs > 0) && (ofs < _bmpArr.Length) ) {
+                                gray = _bmpArr[ofs];
+                                xpos = Math.Round((double)pt.X * _multiplierBmp2Paint) + 104;
+                                ypos = Math.Round((double)this.tableLayoutPanelGraphs.ClientSize.Height - (gray / 2.5f) - 1);
+                                ypos = Math.Min(this.tableLayoutPanelGraphs.ClientSize.Height, Math.Max(ypos, 0));
+                                points[ndx] = new Point((int)xpos, (int)ypos);
+                                lastX = xpos;
+                            } else {
+                                points[ndx] = new Point((int)lastX, this.tableLayoutPanelGraphs.ClientSize.Height);
                             }
-                            xpos = Math.Round((double)pt.X * _multiplierBmp2Paint) + 104;
-                            ypos = Math.Round((double)this.tableLayoutPanelGraphs.ClientSize.Height - (gray / 2.5f) - 1);
-                            ypos = Math.Min(this.tableLayoutPanelGraphs.ClientSize.Height, Math.Max(ypos, 0));
-                            points[ndx] = new Point((int)xpos, (int)ypos);
-                            lastX = xpos;
-                        } else {
-                            points[ndx] = new Point((int)lastX, this.tableLayoutPanelGraphs.ClientSize.Height);
+                            ndx++;
                         }
-                        ndx++;
+                        e.Graphics.DrawLines(Pens.Yellow, points);
                     }
-                    e.Graphics.DrawLines(Pens.Yellow, points);
-                }
-                if ( (_verProf != null) && (_verProf.Length > 0) ) {
-                    Point[] points = new Point[_verProf.Length];
-                    int ndx = 0;
-                    double lastY = 0;
-                    double gray, xpos, ypos;
-                    foreach ( Point pt in _verProf ) {
-                        ofs = pt.Y * _bmpSize.Width * 3 + pt.X * 3;
-                        if ( (ofs > 0) && (ofs < _bmpArr.Length) ) {
-                            gray = _bmpArr[ofs];
-                            if ( _bmpImageType == ImageType.RGBColor ) {
-                                gray = 0.2125 * (double)(_bmpArr[ofs + 2]) + 0.7154 * (double)(_bmpArr[ofs + 1]) + 0.0721 * (double)(_bmpArr[ofs + 0]);
+                    if ( (_verProf != null) && (_verProf.Length > 0) ) {
+                        Point[] points = new Point[_verProf.Length];
+                        int ndx = 0;
+                        double lastY = 0;
+                        double gray, xpos, ypos;
+                        foreach ( Point pt in _verProf ) {
+                            ofs = pt.Y * _bmpSize.Width + pt.X;
+                            if ( (ofs > 0) && (ofs < _bmpArr.Length) ) {
+                                gray = _bmpArr[ofs];
+                                xpos = Math.Round(gray / 2.5f);
+                                ypos = Math.Round((double)pt.Y * _multiplierBmp2Paint);
+                                points[ndx] = new Point((int)xpos, (int)ypos);
+                                lastY = ypos;
+                            } else {
+                                points[ndx] = new Point(0, (int)lastY);
                             }
-                            xpos = Math.Round(gray / 2.5f);
-                            ypos = Math.Round((double)pt.Y * _multiplierBmp2Paint);
-                            points[ndx] = new Point((int)xpos, (int)ypos);
-                            lastY = ypos;
-                        } else {
-                            points[ndx] = new Point(0, (int)lastY);
+                            ndx++;
                         }
-                        ndx++;
+                        e.Graphics.DrawLines(Pens.Yellow, points);
                     }
-                    e.Graphics.DrawLines(Pens.Yellow, points);
                 }
 
-                // always (regardless whether ellipse or circle) extend red lines coming from the beam centroid into the power profile scale
-                if ( _redCross.X != -1 ) {
-                    e.Graphics.DrawLine(Pens.Red, 0, _redCross.Y * _multiplierBmp2Paint, 104, _redCross.Y * _multiplierBmp2Paint);
-                    e.Graphics.DrawLine(Pens.Red, 104 + _redCross.X * _multiplierBmp2Paint, this.tableLayoutPanelGraphs.ClientSize.Height - 104, 104 + _redCross.X * _multiplierBmp2Paint, this.tableLayoutPanelGraphs.ClientSize.Height);
+                // extend red lines coming from the beam's peak intensity location into the intensity profile scale
+                if ( _crosshairCenter.X != -1 ) {
+                    e.Graphics.DrawLine(Pens.Red, 
+                                        0, 
+                                        _crosshairCenter.Y * _multiplierBmp2Paint, 
+                                        104, 
+                                        _crosshairCenter.Y * _multiplierBmp2Paint);
+                    e.Graphics.DrawLine(Pens.Red, 
+                                        104 + _crosshairCenter.X * _multiplierBmp2Paint, 
+                                        this.tableLayoutPanelGraphs.ClientSize.Height - 104, 
+                                        104 + _crosshairCenter.X * _multiplierBmp2Paint, 
+                                        this.tableLayoutPanelGraphs.ClientSize.Height);
                 }
 
                 // show coordinates & intensity value of cross center in the lower left corner
@@ -1460,28 +1559,32 @@ namespace GrzBeamProfiler
                 e.Graphics.DrawLine(Pens.Yellow, 0, this.tableLayoutPanelGraphs.ClientSize.Height - 101, 100, this.tableLayoutPanelGraphs.ClientSize.Height - 101);
                 e.Graphics.DrawLine(Pens.Yellow, 0, this.tableLayoutPanelGraphs.ClientSize.Height - 101, 0, this.tableLayoutPanelGraphs.ClientSize.Height - 1);
                 e.Graphics.DrawLine(Pens.Yellow, 100, this.tableLayoutPanelGraphs.ClientSize.Height - 101, 100, this.tableLayoutPanelGraphs.ClientSize.Height - 1);
-                int crossCenterPositionInGrayArr;
+
+                int yofs = this.tableLayoutPanelGraphs.ClientSize.Height - 98;
+                // ellipse center
                 string ctrX = "";
                 string ctrY = "";
-                if ( (_ep.center != new Point(0, 0)) && (_ep.center.X > 0) ) {
-                    // ellipse based
-                    crossCenterPositionInGrayArr = (int)_ep.center.Y * _bmpSize.Width * 3 + (int)_ep.center.X * 3;
-                    try {
-                        _centerGrayByte = _bmpArr[crossCenterPositionInGrayArr];
-                    } catch ( IndexOutOfRangeException ) {
-                        return;
-                    }
-                    ctrX = ((int)(_ep.center.X)).ToString();
-                    ctrY = ((int)(_ep.center.Y)).ToString();
+                if ( _epCv.RotatedRect.Center.X > 0 ) {
+                    ctrX = ((int)(_epCv.RotatedRect.Center.X)).ToString();
+                    ctrY = ((int)(_epCv.RotatedRect.Center.Y)).ToString();
                 }
-                int yofs = this.tableLayoutPanelGraphs.ClientSize.Height - 98;
-                e.Graphics.DrawString("ctrX\t" + ctrX, this.Font, Brushes.Yellow, new Point(5, yofs));
-                e.Graphics.DrawString("ctrY\t" + ctrY, this.Font, Brushes.Yellow, new Point(5, yofs + this.Font.Height + 3));
-                e.Graphics.DrawString("gray\t" + _centerGrayByte.ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 2 * (this.Font.Height + 3)));
-//                e.Graphics.DrawString("power\t" + _ep.power.ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 2 * (this.Font.Height + 3)));
-                e.Graphics.DrawString("diam\t" + _beamDiameter.ToString() + " (" + _settings.BeamMinimumDiameter.ToString() + ")", this.Font, Brushes.Yellow, new Point(5, yofs + 3 * (this.Font.Height + 3)));
-                e.Graphics.DrawString("a\t" + _ep.a.ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 4 * (this.Font.Height + 3)));
-                e.Graphics.DrawString("b\t" + _ep.b.ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 5 * (this.Font.Height + 3)));
+                string addSpace = (ctrX.Length + ctrY.Length) > 7 ? "" : " ";
+                e.Graphics.DrawString(String.Format("center   {0}{1} {2}", addSpace, ctrX, ctrY), this.Font, Brushes.Yellow, new Point(5, yofs));
+                // beam power
+                e.Graphics.DrawString(String.Format("power\t{0:0.#E+00}", _beamEllipsePower), this.Font, Brushes.Yellow, new Point(5, yofs + this.Font.Height + 3));
+                // beam peak intensity
+                Brush brush = Brushes.Yellow;
+                if ( _beamPeakIntensity == 255 || _beamPeakIntensity == 0 ) {
+                    brush = Brushes.Red;
+                }
+                e.Graphics.DrawString(String.Format("gray\t{0} ({1})", _beamPeakIntensity, _settings.BeamIntensityThreshold), this.Font, brush, new Point(5, yofs + 2 * (this.Font.Height + 3)));
+                // beam diameter and ellipse axis
+                int beamDiameter = (int)(_epCv.RotatedRect.Size.Width / 2 + _epCv.RotatedRect.Size.Height / 2);
+                brush = beamDiameter < _settings.BeamMinimumDiameter ? Brushes.Red : Brushes.Yellow;
+                e.Graphics.DrawString("diam\t" + beamDiameter.ToString() + " (" + _settings.BeamMinimumDiameter.ToString() + ")", this.Font, brush, new Point(5, yofs + 3 * (this.Font.Height + 3)));
+                e.Graphics.DrawString("a\t" + ((int)_epCv.RotatedRect.Size.Height).ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 4 * (this.Font.Height + 3)));
+                e.Graphics.DrawString("b\t" + ((int)_epCv.RotatedRect.Size.Width).ToString(), this.Font, Brushes.Yellow, new Point(5, yofs + 5 * (this.Font.Height + 3)));
+
                 // update pseudo color scale 
                 this.pictureBoxPseudo.Invalidate();
 
@@ -1494,241 +1597,298 @@ namespace GrzBeamProfiler
         //
         private void pictureBox_PaintWorker() 
         {
+            int exStp = 0;
             try {
 
-                using ( Graphics g = Graphics.FromImage(_bmp) ) {
+                // call comes from a non UI thread
+                Invoke(new Action(() => {
 
-                    // busy
-                    if ( _paintBusy ) {
-                        this.Text = "Paint(busy): ";
-                        return;
-                    }
-                    _paintBusy = true;
+                    using ( Graphics g = Graphics.FromImage(_bmp) ) {
 
-                    // no image to show but show red cross
-                    if ( _bmp == null ) {
-                        g.DrawLine(Pens.Red, new Point(0, _redCross.Y), new Point(this.pictureBox.ClientSize.Width, _redCross.Y));
-                        g.DrawLine(Pens.Red, new Point(_redCross.X, 0), new Point(_redCross.X, this.pictureBox.ClientSize.Height));
-                        _paintBusy = false;
-                        return;
-                    }
-
-                    // no action w/o reasonable red cross coordinates: happens 'on purpose' after right click to make overlay disappear 
-                    if ( _redCross.X < 0 || _redCross.Y < 0 ) {
-                        _paintBusy = false;
-                        return;
-                    }
-
-                    // axis stretching/compressing multiplier between pictureBox / _bmp / tableLayoutPanelGraphs_Paint: one multiplier, because aspect ratio is ALWAYS kept 
-                    _multiplierBmp2Paint = (float)this.pictureBox.ClientSize.Width / (float)_bmpSize.Width;
-
-                    // allows Bitmap transfer via socket to another app; _socketBmp is locked unless drawing is ready, so the sending thread always gets a decent image
-                    Graphics sg = null;
-                    _socketBmp = new Bitmap(1, 1);
-                    lock ( _socketBmp ) {
-                        if ( _settings.ProvideSocketScreenshots ) {
-                            _socketBmp = new Bitmap(_bmp, this.pictureBox.ClientSize.Width, this.pictureBox.ClientSize.Height);
-                            _socketBmp = new Bitmap(_bmp, this.pictureBox.ClientSize.Width, this.pictureBox.ClientSize.Height);
-                            sg = Graphics.FromImage(_socketBmp);
-                        }
-                                                
-                        int blobError = -100;
-                        List<Point> beamPolygon = new List<Point>();
-                        PointF beamCentroid = new PointF();
-
-                        // let the red cross follow the hot spot, aka beam blob 
-                        if ( _redCrossFollowsBeam ) {
-                            try {
-                                //
-                                //  main image procesing
-                                //
-                                blobError = getBeamBlob(_bmpSize, _bmpArr, _settings.BeamPowerThreshold, _settings.BeamMinimumDiameter, out beamPolygon, out beamCentroid, out _ep);
-                                //
-                            } catch ( Exception ex ) {
-                                this.Text = "Paint(0): " + ex.Message;
-                                _paintBusy = false;
-                                return;
-                            }
-                            try {
-                                // red cross center coordinates
-                                if ( (_ep.center.X > 0) && (_ep.center.Y > 0) ) {
-                                    _redCross.X = _ep.center.X;
-                                    _redCross.Y = _ep.center.Y;
-                                }
-                                // approximate blob diameter
-                                _beamDiameter = _ep.a + _ep.b;
-                                // don't render ellipse, if blob is too small
-                                if ( _beamDiameter < _settings.BeamMinimumDiameter ) {
-                                    _ep = new EllipseParam();
-                                }
-                            } catch ( Exception ex ) {
-                                this.Text = "Paint(1): " + ex.Message;
-                                _paintBusy = false;
-                                return;
-                            }
-                        }
-
-                        // clear beam power profiles
-                        _horProf = new Point[0];
-                        _verProf = new Point[0];
-
-                        // delta is used to determine an enclosing circle, respectively the cross sections along the ellipse's main axis
-                        float delta = (_ep.a > _ep.b) ? _ep.a + 150 : _ep.b + 150;
-                        // delta needs to be limited to the actual image dimensions (assuming height is smaller than width)
-                        if ( delta > _bmpSize.Height / 2 - 20 ) {
-                            delta -= 120;
-                        }
-                        
-                        // show red cross: rendering here allows the profile data to override the red cross
-                        try {
-                            if ( (delta > 0) && (_ep.center != new Point(0, 0)) ) {
-                                //
-                                // overlay beam as ellipse: the red cross orientatation shall follow both gravity axis of the ellipse
-                                //
-                                double theta = _ep.theta;
-                                double adjacentH = delta * Math.Cos(Math.PI * theta / 180.0);
-                                double oppositeH = delta * Math.Sin(Math.PI * theta / 180.0);
-                                double xIntersecCircleH1 = _ep.center.X + adjacentH;
-                                double yIntersecCircleH1 = _ep.center.Y + oppositeH;
-                                double xIntersecCircleH2 = _ep.center.X - adjacentH;
-                                double yIntersecCircleH2 = _ep.center.Y - oppositeH;
-                                double adjacentV = delta * Math.Cos(Math.PI / 2 + Math.PI * theta / 180.0);
-                                double oppositeV = delta * Math.Sin(Math.PI / 2 + Math.PI * theta / 180.0);
-                                double xIntersecCircleV1 = _ep.center.X + adjacentV;
-                                double yIntersecCircleV1 = _ep.center.Y + oppositeV;
-                                double xIntersecCircleV2 = _ep.center.X - adjacentV;
-                                double yIntersecCircleV2 = _ep.center.Y - oppositeV;
-                                g.DrawLine(Pens.Red, new Point((int)xIntersecCircleH1, (int)yIntersecCircleH1), new Point((int)xIntersecCircleH2, (int)yIntersecCircleH2));
-                                g.DrawLine(Pens.Red, new Point((int)xIntersecCircleV1, (int)yIntersecCircleV1), new Point((int)xIntersecCircleV2, (int)yIntersecCircleV2));
-                                if ( _settings.ProvideSocketScreenshots ) {
-                                    sg.DrawLine(Pens.Red, new Point((int)xIntersecCircleH1, (int)yIntersecCircleH1), new Point((int)xIntersecCircleH2, (int)yIntersecCircleH2));
-                                    sg.DrawLine(Pens.Red, new Point((int)xIntersecCircleV1, (int)yIntersecCircleV1), new Point((int)xIntersecCircleV2, (int)yIntersecCircleV2));
-                                }
-
-                                // beam power profiles: get Points along the 2 sections thru ellipse by using linear function y = mx + n
-                                double divider = (xIntersecCircleH2 - xIntersecCircleH1) == 0 ? 1 : (xIntersecCircleH2 - xIntersecCircleH1);
-                                double m = (double)(yIntersecCircleH2 - yIntersecCircleH1) / divider;
-                                double n = (double)yIntersecCircleH1 - (double)xIntersecCircleH1 * m;
-                                int start = (int)Math.Min(xIntersecCircleH1, xIntersecCircleH2);
-                                int stop = (int)Math.Max(xIntersecCircleH1, xIntersecCircleH2);
-                                try {
-                                    _horProf = new Point[stop - start];
-                                } catch ( OutOfMemoryException oome ) {
-                                    this.Text = "Paint(6): " + oome.Message;
-                                    _paintBusy = false;
-                                    return;
-                                }
-                                int ndx = 0;
-                                for ( int x = start; x < stop; x++ ) {
-                                    _horProf[ndx++] = new Point(x, (int)(m * (double)x + (double)n));
-                                }
-                                divider = (xIntersecCircleV2 - xIntersecCircleV1) == 0 ? 1 : (xIntersecCircleV2 - xIntersecCircleV1);
-                                m = (double)(yIntersecCircleV2 - yIntersecCircleV1) / divider;
-                                n = (double)yIntersecCircleV1 - (double)xIntersecCircleV1 * m;
-                                start = (int)Math.Min(yIntersecCircleV1, yIntersecCircleV2);
-                                stop = (int)Math.Max(yIntersecCircleV1, yIntersecCircleV2);
-                                _verProf = new Point[stop - start];
-                                ndx = 0;
-                                for ( int y = start; y < stop; y++ ) {
-                                    _verProf[ndx++] = new Point((int)(1.0f / m * ((double)y - (double)n)), (int)y);
-                                }
-
-                                // extend red cross endpoints with surrounding circle to left and bottom profile areas
-                                float[] dashValues = { 1, 5 };
-                                Pen dashPen = new Pen(Color.White);
-                                dashPen.DashPattern = dashValues;
-                                g.DrawLine(Pens.White, new Point((int)xIntersecCircleH1, (int)yIntersecCircleH1), new Point((int)xIntersecCircleH1, _bmp.Height));
-                                g.DrawLine(Pens.White, new Point((int)xIntersecCircleH2, (int)yIntersecCircleH2), new Point((int)xIntersecCircleH2, _bmp.Height));
-                                g.DrawLine(Pens.White, new Point((int)xIntersecCircleV1, (int)yIntersecCircleV1), new Point(0, (int)yIntersecCircleV1));
-                                g.DrawLine(Pens.White, new Point((int)xIntersecCircleV2, (int)yIntersecCircleV2), new Point(0, (int)yIntersecCircleV2));
-                            }
-                        } catch ( Exception ex ) {
-                            this.Text = "Paint(2): " + ex.Message;
-                            _paintBusy = false;
+                        // no image to show but show crosshair
+                        if ( _bmp == null ) {
+                            g.DrawLine(Pens.Red, new Point(0, _crosshairCenter.Y), new Point(this.pictureBox.ClientSize.Width, _crosshairCenter.Y));
+                            g.DrawLine(Pens.Red, new Point(_crosshairCenter.X, 0), new Point(_crosshairCenter.X, this.pictureBox.ClientSize.Height));
                             return;
                         }
 
-                        // show real beam border polygon --> according to beam threshold
-                        Pen penPolygon = _settings.BeamPowerThreshold < 100 ? Pens.White : Pens.Black;
-                        if ( _settings.DebugSearchTrace ) {
-                            penPolygon = Pens.White;
+                        // no action w/o reasonable crosshair coordinates: happens 'on purpose' after context menu to make overlays disappear 
+                        if ( _crosshairCenter.X < 0 || _crosshairCenter.Y < 0 ) {
+                            return;
                         }
-                        try {
-                            if ( beamPolygon != null && beamPolygon.Count > 0 ) {
-                                g.DrawLines(penPolygon, beamPolygon.ToArray());
-                                if ( _settings.ProvideSocketScreenshots ) {
-                                    sg.DrawLines(penPolygon, beamPolygon.ToArray());
+
+                        // axis stretching/compressing multiplier between pictureBox / _bmp / tableLayoutPanelGraphs_Paint: one multiplier, because aspect ratio is ALWAYS kept 
+                        _multiplierBmp2Paint = (float)this.pictureBox.ClientSize.Width / (float)_bmpSize.Width;
+
+                        // allows Bitmap transfer via socket to another app; _socketBmp is locked unless drawing is ready, so the sending thread always gets a decent image
+                        Graphics sg = null;
+                        _socketBmp = new Bitmap(1, 1);
+                        lock ( _socketBmp ) {
+                            if ( _settings.ProvideSocketScreenshots ) {
+                                _socketBmp = new Bitmap(_bmp, this.pictureBox.ClientSize.Width, this.pictureBox.ClientSize.Height);
+                                _socketBmp = new Bitmap(_bmp, this.pictureBox.ClientSize.Width, this.pictureBox.ClientSize.Height);
+                                sg = Graphics.FromImage(_socketBmp);
+                            }
+
+                            int blobError = -100;
+                            List<Point> beamPolygon = new List<Point>();
+                            int crosshairDiameter = _crosshairDiameterLast;
+
+                            // let the crosshair follow the hot spot, aka beam blob 
+                            if ( _settings.FollowBeam ) {
+                                try {
+                                    //
+                                    //  main image procesing
+                                    //
+                                    blobError = getBeamBlob(_bmpSize, _bmpArr, _settings.BeamIntensityThreshold, _settings.BeamMinimumDiameter,
+                                                            out beamPolygon, out crosshairDiameter, out _epCv);
+                                    //
+                                    if ( blobError == -1 ) {
+                                        this.Text = "Too much background noise";
+                                        return;
+                                    }
+                                    // needed, if crosshair doesn't follow beam
+                                    _crosshairDiameterLast = crosshairDiameter;
+                                } catch ( Exception ex ) {
+                                    this.Text = "Paint(0): " + ex.Message;
+                                    return;
+                                }
+                                try {
+                                    // crosshair center coordinates
+                                    if ( (_epCv.RotatedRect.Center.X > 0) && (_epCv.RotatedRect.Center.Y > 0) ) {
+                                        _crosshairCenter.X = (int)_epCv.RotatedRect.Center.X;
+                                        _crosshairCenter.Y = (int)_epCv.RotatedRect.Center.Y;
+                                    }
+                                } catch ( Exception ex ) {
+                                    this.Text = "Paint(1): " + ex.Message;
+                                    return;
                                 }
                             }
-                        } catch ( Exception ex ) {
-                            this.Text = "Paint(4): " + ex.Message;
-                        }
 
-                        // show beam enclosing ellipse --> according to beam power calculation method (FWHM, D86, Euler)
-                        if ( _ep.center != new Point(0, 0) ) {
-//                        Pen penEllipse = _ep.pixelPower < 80 ? Pens.White : Pens.Black;
-                            _penEllipse = _penEllipse == _thickRedPen ? _thickYellowPen : _thickRedPen;
-                            Rectangle rect = new Rectangle(
-                                new Point(_ep.center.X - _ep.a, _ep.center.Y - _ep.b),
-                                new Size(2 * _ep.a, 2 * _ep.b));
-                            g.TranslateTransform(_ep.center.X, _ep.center.Y);
-                            g.RotateTransform((float)_ep.theta);
-                            g.TranslateTransform(-1 *_ep.center.X, -1 * _ep.center.Y);
-                            g.DrawEllipse(_penEllipse, rect);
-                            g.ResetTransform();
-                            if ( _settings.ProvideSocketScreenshots ) {
-                                sg.TranslateTransform(_ep.center.X, _ep.center.Y);
-                                sg.RotateTransform((float)_ep.theta);
-                                sg.TranslateTransform(-1 *_ep.center.X, -1 * _ep.center.Y);
-                                sg.DrawEllipse(Pens.Black, rect);
-                                sg.ResetTransform();
+                            exStp = 1;
+
+                            // crosshairRadius is used to draw an enclosing circle, respectively the cross sections along the ellipse's main axis
+                            float crosshairRadius = crosshairDiameter / 2 + 50;
+                            // crosshairRadius needs to be limited to the actual image dimensions (assuming height is smaller than width)
+                            crosshairRadius = Math.Min(crosshairRadius, _bmpSize.Height / 2);
+                            try {
+                                if ( (crosshairRadius > 0) && (_epCv.RotatedRect.Center.X != 0) ) {
+
+                                    //
+                                    // crosshair follows both gravity axis of the calculated ellipse
+                                    //
+                                    float theta = _epCv.RotatedRect.Angle;
+                                    // horizontal crosshair axis projection to canvas
+                                    float horzCanvasX = crosshairRadius * (float)Math.Sin(Math.PI * theta / 180.0);  // x projection of red axis to canvas coordinates
+                                    float horzCanvasY = crosshairRadius * (float)Math.Cos(Math.PI * theta / 180.0);  // y projection of red axis to canvas coordinates
+                                    // horizontal intersection points of crosshair with crosshair circle
+                                    PointF horzLeft = new PointF(_epCv.RotatedRect.Center.X + horzCanvasX, _epCv.RotatedRect.Center.Y + horzCanvasY);
+                                    PointF horzRight = new PointF(_epCv.RotatedRect.Center.X - horzCanvasX, _epCv.RotatedRect.Center.Y - horzCanvasY);
+                                    // vertical crosshair axis
+                                    float vertCanvasX = crosshairRadius * (float)Math.Sin(Math.PI / 2 + Math.PI * theta / 180.0);
+                                    float vertCanvasY = crosshairRadius * (float)Math.Cos(Math.PI / 2 + Math.PI * theta / 180.0);
+                                    PointF vertTop = new PointF(_epCv.RotatedRect.Center.X + vertCanvasX, _epCv.RotatedRect.Center.Y + vertCanvasY);
+                                    PointF vertBott = new PointF(_epCv.RotatedRect.Center.X - vertCanvasX, _epCv.RotatedRect.Center.Y - vertCanvasY);
+                                    if ( _settings.Crosshair ) {
+                                        // draw the two red crosshair axis
+                                        g.DrawLine(_crosshairPen, horzLeft, horzRight);
+                                        g.DrawLine(_crosshairPen, vertTop, vertBott);
+                                        if ( _settings.ProvideSocketScreenshots ) {
+                                            sg.DrawLine(Pens.Red, horzLeft, horzRight);
+                                            sg.DrawLine(Pens.Red, vertTop, vertBott);
+                                        }
+                                    }
+
+                                    //
+                                    // beam intensity profiles: get point coordinates along the 2 cross sections thru the beam by using linear function y = mx + n
+                                    //      profiles contain just _bmp pixel coordinates, which are later translated to intensity = f(x)
+                                    //
+                                    if ( _settings.FollowBeam ) {
+                                        // clear beam intensity profiles
+                                        _horProf = new Point[0];
+                                        _verProf = new Point[0];
+                                        if ( _settings.SwapProfiles ) {
+                                            // an elliptic beam with perpendicular long axis may want to have switched profile sections
+                                            float divider = horzRight.X - horzLeft.X;
+                                            divider = Math.Abs(divider) < 0.001f ? Math.Max(1, Math.Sign(divider)) * 0.001f : divider;
+                                            float m = (horzRight.Y - horzLeft.Y) / divider;
+                                            float n = horzRight.Y - horzRight.X * m;
+                                            int start = (int)Math.Min(horzLeft.Y, horzRight.Y);
+                                            int stop = (int)Math.Max(horzLeft.Y, horzRight.Y);
+                                            _verProf = new Point[stop - start];
+                                            int ndx = 0;
+                                            for ( int y = start; y < stop; y++ ) {
+                                                _verProf[ndx++] = new Point((int)(1.0f / m * ((float)y - n)), y);
+                                            }
+                                            divider = vertBott.X - vertTop.X;
+                                            divider = Math.Abs(divider) < 0.001f ? Math.Sign(divider) * 0.001f : divider;
+                                            m = (vertBott.Y - vertTop.Y) / divider;
+                                            n = vertTop.Y - vertTop.X * m;
+                                            start = (int)Math.Min(vertTop.X, vertBott.X);
+                                            stop = (int)Math.Max(vertTop.X, vertBott.X);
+                                            _horProf = new Point[stop - start];
+                                            ndx = 0;
+                                            for ( int x = start; x < stop; x++ ) {
+                                                _horProf[ndx++] = new Point(x, (int)(m * (float)x + n));
+                                            }
+                                        } else {
+                                            // best for an elliptic beam with horizontal orientation
+                                            float divider = horzRight.X - horzLeft.X;
+                                            divider = Math.Abs(divider) < 0.001f ? Math.Max(1, Math.Sign(divider)) * 0.001f : divider;
+                                            float m = (horzRight.Y - horzLeft.Y) / divider;
+                                            float n = horzLeft.Y - horzLeft.X * m;
+                                            int start = (int)Math.Min(horzLeft.X, horzRight.X);
+                                            int stop = (int)Math.Max(horzLeft.X, horzRight.X);
+                                            try {
+                                                _horProf = new Point[stop - start];
+                                            } catch ( OutOfMemoryException oome ) {
+                                                this.Text = "Paint(6): " + oome.Message;
+                                                return;
+                                            }
+                                            int ndx = 0;
+                                            for ( int x = start; x < stop; x++ ) {
+                                                _horProf[ndx++] = new Point(x, (int)(m * (float)x + n));
+                                            }
+                                            divider = vertBott.X - vertTop.X;
+                                            divider = Math.Abs(divider) < 0.001f ? Math.Sign(divider) * 0.001f : divider;
+                                            m = (vertBott.Y - vertTop.Y) / divider;
+                                            n = vertTop.Y - vertTop.X * m;
+                                            start = (int)Math.Min(vertTop.Y, vertBott.Y);
+                                            stop = (int)Math.Max(vertTop.Y, vertBott.Y);
+                                            _verProf = new Point[stop - start];
+                                            ndx = 0;
+                                            for ( int y = start; y < stop; y++ ) {
+                                                _verProf[ndx++] = new Point((int)(1.0f / m * (float)(y - n)), y);
+                                            }
+                                        }
+                                    }
+
+                                    exStp = 2;
+
+                                    //
+                                    // extend the 4 red crosshair endpoints with surrounding circle
+                                    //
+                                    if ( _settings.Crosshair ) {
+                                        if ( _settings.SwapProfiles ) {
+                                            // ... to the left profile area ...
+                                            g.DrawLine(Pens.White, horzLeft, new PointF(0, horzLeft.Y));
+                                            g.DrawLine(Pens.White, horzRight, new PointF(0, horzRight.Y));
+                                            // ... and to the bottom profile area
+                                            g.DrawLine(Pens.White, vertTop, new PointF(vertTop.X, _bmp.Height));
+                                            g.DrawLine(Pens.White, vertBott, new PointF(vertBott.X, _bmp.Height));
+                                        } else {
+                                            // ... to the bottom profile area ...
+                                            g.DrawLine(Pens.White, horzLeft, new PointF(horzLeft.X, _bmp.Height));
+                                            g.DrawLine(Pens.White, horzRight, new PointF(horzRight.X, _bmp.Height));
+                                            // ... and to the left profile area
+                                            g.DrawLine(Pens.White, vertTop, new PointF(0, vertTop.Y));
+                                            g.DrawLine(Pens.White, vertBott, new PointF(0, vertBott.Y));
+                                        }
+                                    }
+                                }
+                            } catch ( Exception ex ) {
+                                this.Text = "Paint(2): " + ex.Message;
+                                return;
                             }
 
-                        }
+                            exStp = 3;
 
-                        // show circle (part of the crosshair) around "beam enclosing ellipse"
-                        if ( (delta > 0) && (_ep.center != new Point(0, 0)) ) {
-                            float x = _ep.center.X - delta;
-                            float y = _ep.center.Y - delta;
-                            float w = 2 * delta;
-                            float h = 2 * delta;
-                            g.DrawEllipse(Pens.Gray, x, y, w, h);
+                            // show real beam border polygon --> according to selected beam threshold
+                            Pen penPolygon = _settings.BeamIntensityThreshold < 100 ? Pens.White : Pens.Black;
+                            if ( _settings.SearchTraces ) {
+                                penPolygon = Pens.White;
+                            }
+                            try {
+                                if ( beamPolygon != null && beamPolygon.Count > 0 ) {
+                                    g.DrawLines(penPolygon, beamPolygon.ToArray());
+                                    if ( _settings.ProvideSocketScreenshots ) {
+                                        sg.DrawLines(penPolygon, beamPolygon.ToArray());
+                                    }
+                                }
+                            } catch ( Exception ex ) {
+                                this.Text = "Paint(4): " + ex.Message;
+                            }
+
+                            // show beam enclosing ellipse --> according to beam power calculation method (FWHM, D86)
+                            if ( _epCv.RotatedRect.Center.X != 0 && _settings.Ellipse ) {
+                                // ellipse color is inverted from the color at ellipse perimeter
+                                _ellipsePen.Color = _ellipseColorInverted;
+                                // draw EmguCV fitted ellipse
+                                Rectangle rect = new Rectangle(
+                                                     new Point((int)(_epCv.RotatedRect.Center.X - _epCv.RotatedRect.Size.Width / 2),
+                                                               (int)(_epCv.RotatedRect.Center.Y - _epCv.RotatedRect.Size.Height / 2)),
+                                                     new Size((int)_epCv.RotatedRect.Size.Width,
+                                                              (int)_epCv.RotatedRect.Size.Height));
+                                g.TranslateTransform((int)_epCv.RotatedRect.Center.X, (int)_epCv.RotatedRect.Center.Y);
+                                g.RotateTransform(-1 * _epCv.RotatedRect.Angle);
+                                g.TranslateTransform(-1 * (int)_epCv.RotatedRect.Center.X, -1 * (int)_epCv.RotatedRect.Center.Y);
+                                g.DrawEllipse(_ellipsePen, rect);
+                                g.ResetTransform();
+                                if ( _settings.ProvideSocketScreenshots ) {
+                                    sg.TranslateTransform((int)_epCv.RotatedRect.Center.X, (int)_epCv.RotatedRect.Center.Y);
+                                    sg.RotateTransform(-1 * _epCv.RotatedRect.Angle);
+                                    sg.TranslateTransform(-1 * (int)_epCv.RotatedRect.Center.X, -1 * (int)_epCv.RotatedRect.Center.Y);
+                                    sg.DrawEllipse(Pens.Black, rect);
+                                    sg.ResetTransform();
+                                }
+                            }
+
+                            exStp = 4;
+
+                            // show circle part of the crosshair around "beam enclosing ellipse"
+                            if ( _settings.Crosshair ) {
+                                if ( (crosshairRadius > 0) && (_epCv.RotatedRect.Center != new Point(0, 0)) ) {
+                                    float x = _epCv.RotatedRect.Center.X - crosshairRadius;
+                                    float y = _epCv.RotatedRect.Center.Y - crosshairRadius;
+                                    float d = 2 * crosshairRadius;
+                                    g.DrawEllipse(Pens.White, x, y, d, d);
+                                    if ( _settings.ProvideSocketScreenshots ) {
+                                        sg.DrawEllipse(Pens.White, x, y, d, d);
+                                    }
+                                }
+                            }
+
+                            exStp = 5;
+
+                            // show peak intensity
+                            if ( _settings.BeamPeak && _peakCenterSub.X > 0 ) {
+                                g.DrawLine(Pens.Black, _peakCenterSub.X - 10, _peakCenterSub.Y, _peakCenterSub.X + 10, _peakCenterSub.Y);
+                                g.DrawLine(Pens.Black, _peakCenterSub.X, _peakCenterSub.Y - 10, _peakCenterSub.X, _peakCenterSub.Y + 10);
+                            }
+
+                            exStp = 6;
+
+                            // hide OR show a small white cross indicating the beam search origin
+                            if ( _settings.BeamSearchOrigin != AppSettings.BeamSearchStates.HIDE ) {
+                                // start beam search EITHER from an offset to the image center OR from the image center
+                                Point imageCenterOffset = _settings.BeamSearchOrigin == AppSettings.BeamSearchStates.MANUAL ? _settings.BeamSearchOffset : new Point();
+                                PointF imageCenter = new PointF(_bmpSize.Width / 2 + imageCenterOffset.X, _bmpSize.Height / 2 + imageCenterOffset.Y);
+                                g.DrawLine(Pens.White, imageCenter.X - 10, imageCenter.Y, imageCenter.X + 10, imageCenter.Y);
+                                g.DrawLine(Pens.White, imageCenter.X, imageCenter.Y - 10, imageCenter.X, imageCenter.Y + 10);
+                                if ( _settings.ProvideSocketScreenshots ) {
+                                    sg.DrawLine(Pens.White, imageCenter.X - 10, imageCenter.Y, imageCenter.X + 10, imageCenter.Y);
+                                    sg.DrawLine(Pens.White, imageCenter.X, imageCenter.Y - 10, imageCenter.X, imageCenter.Y + 10);
+                                }
+                            }
+
+                            exStp = 7;
+
+                            // allows Bitmap transfer via socket to another listening app                
                             if ( _settings.ProvideSocketScreenshots ) {
-                                sg.DrawEllipse(Pens.Gray, x, y, w, h);
+                                sg.Dispose();
                             }
                         }
 
-                        // hide OR show a small white cross indicating the beam search origin
-                        if ( _settings.BeamSearchOrigin != AppSettings.BeamSearchStates.HIDE ) {
-                            // start beam search EITHER from an offset to the image center OR from the image center
-                            Point imageCenterOffset = _settings.BeamSearchOrigin == AppSettings.BeamSearchStates.MANUAL ? _settings.BeamSearchOffset : new Point();
-                            PointF imageCenter = new PointF(_bmpSize.Width / 2 + imageCenterOffset.X, _bmpSize.Height / 2 + imageCenterOffset.Y);
-                            g.DrawLine(Pens.White, imageCenter.X - 10, imageCenter.Y, imageCenter.X + 10, imageCenter.Y);
-                            g.DrawLine(Pens.White, imageCenter.X, imageCenter.Y - 10, imageCenter.X, imageCenter.Y + 10);
-                            if ( _settings.ProvideSocketScreenshots ) {
-                                sg.DrawLine(Pens.White, imageCenter.X - 10, imageCenter.Y, imageCenter.X + 10, imageCenter.Y);
-                                sg.DrawLine(Pens.White, imageCenter.X, imageCenter.Y - 10, imageCenter.X, imageCenter.Y + 10);
-                            }
-                        }
+                        // repaint scales left & bottom
+                        this.tableLayoutPanelGraphs.Invalidate(false);
+                        this.tableLayoutPanelGraphs.Update();
 
-                        // allows Bitmap transfer via socket to another listening app                
-                        if ( _settings.ProvideSocketScreenshots ) {
-                            sg.Dispose();
-                        }
-                    }
+                    } // end of 'using ( Graphics g = Graphics.FromImage(bmp) ) {'
 
-                    // done here
-                    _paintBusy = false;
-
-                    // repaint scales left & bottom
-                    this.tableLayoutPanelGraphs.Invalidate(false);
-                    this.tableLayoutPanelGraphs.Update();
-
-                } // end of 'using ( Graphics g = Graphics.FromImage(bmp) ) {'
+                })); // end of invoke
 
             } catch ( Exception fe ) {
-                this.Text = "Paint(5): " + fe.Message;
-                _paintBusy = false;
+                _headlineAlert = String.Format("pictureBox_PaintWorker exStp: {0}", exStp);
             }
         }
 
@@ -1744,7 +1904,7 @@ namespace GrzBeamProfiler
                                                      new object[] { 0x400000, false });
         }
 
-        // set red cross position coordinates relative to pictureBox image == canvas
+        // set crosshair position coordinates relative to pictureBox image == canvas
         private void pictureBox_MouseDown(object sender, MouseEventArgs e)
         {
             if ( e.Button == System.Windows.Forms.MouseButtons.Left ) {
@@ -1769,27 +1929,9 @@ namespace GrzBeamProfiler
                     _settings.BeamSearchOffset = new Point((int)((float)(e.X) / _multiplierBmp2Paint - _bmpSize.Width / 2), (int)((float)(e.Y) / _multiplierBmp2Paint - _bmpSize.Height / 2));
                 }
             }
-            // show red cross even in a still image
-            if ( !_redCrossFollowsBeam && ((_bmp == null) || ((_videoDevice != null) && (!_videoDevice.IsRunning))) ) {
+            // show crosshair even in a still image
+            if ( !_settings.FollowBeam && ((_bmp == null) || ((_videoDevice != null) && (!_videoDevice.IsRunning))) ) {
                 this.pictureBox.Invalidate();
-            }
-        }
-
-        // toggle red crosshair on/off
-        void toggleCrossHairVisibility() {
-            if ( _redCross == new Point(-1, -1) ) {
-                // crosshair becomes visible
-                _redCross = _redCrossLast;
-                this.pictureBox_CmShowCrosshair.Checked = true;
-            } else {
-                // crosshair becomes invisible
-                _redCrossLast = _redCross;
-                _redCross = new Point(-1, -1);
-                this.pictureBox_CmShowCrosshair.Checked = false;
-            }
-            headLine();
-            if ( !_redCrossFollowsBeam && ((_bmp == null) || ((_videoDevice != null) && (!_videoDevice.IsRunning))) ) {
-                this.Invalidate(true);
             }
         }
 
@@ -1797,53 +1939,18 @@ namespace GrzBeamProfiler
         const int WM_KEYDOWN = 0x100;
         public bool PreFilterMessage(ref Message m)     
         {
-            // handle red cross with keys
+            // handle crosshair appearance with keys
             if ( m.Msg == WM_KEYDOWN ) {
                 // <ESC> toggles red cross on/off
                 if ( (Keys)m.WParam == Keys.Escape ) {
-                    toggleCrossHairVisibility();
+                    this.pictureBox_CmShowCrosshair.PerformClick();
                     return true;
                 }
             }
             return false;
         }
 
-        // fast & correct (other than AForge):
-        // https://web.archive.org/web/20110827032809/http://www.switchonthecode.com/tutorials/csharp-tutorial-convert-a-color-image-to-grayscale
-        public static Bitmap MakeGrayscaleGDI(Bitmap original)
-        {
-            // create a blank bitmap the same size as original
-            Bitmap newBitmap = new Bitmap(original.Width, original.Height, PixelFormat.Format32bppArgb);
-
-            // get a graphics object from the new image
-            Graphics g = Graphics.FromImage(newBitmap);
-
-            //create the grayscale ColorMatrix
-            ColorMatrix colorMatrix = new ColorMatrix( new float[][]
-            {
-               // BT709 simplified
-               new float[] {.2f, .2f, .2f, 0, 0},
-               new float[] {.7f, .7f, .7f, 0, 0},
-               new float[] {.1f, .1f, .1f, 0, 0},
-               new float[] {0, 0, 0, 1, 0},
-               new float[] {0, 0, 0, 0, 1}
-            });
-
-            // create image attributes object
-            ImageAttributes attributes = new ImageAttributes();
-
-            // set the color matrix attribute
-            attributes.SetColorMatrix(colorMatrix);
-
-            // draw the original image on the new image using the grayscale color matrix
-            g.DrawImage(original, new Rectangle(0, 0, original.Width, original.Height), 0, 0, original.Width, original.Height, GraphicsUnit.Pixel, attributes);
-
-            // dispose the Graphics object
-            g.Dispose();
-            return newBitmap;
-        }
-
-        // there are two ulam spiral modes:
+        // there are two Ulam spiral modes:
         enum SpiralMode {
             SEARCH_HOT = 0,  // search a hot pixel from a given start coordinate
             BUILD_BLOB = 1,  // build a blob containing hat pixels of a beam
@@ -1863,7 +1970,7 @@ namespace GrzBeamProfiler
         {
             bool retval = false;
             if ( y < bmpSize.Height && y > 0 && x < bmpSize.Width && x > 0 ) {
-                int pos = y * bmpSize.Width * 3 + x * 3;
+                int pos = y * bmpSize.Width + x;
                 if ( bmpArr[pos] >= threshold ) {
                     retval = true;
                 }
@@ -1879,7 +1986,7 @@ namespace GrzBeamProfiler
             if ( isBlobPixel(bmpSize, bmpArr, pt.X, pt.Y, thresholdBlob) ) ret |= 8;
             return ret;
         }
-        List<Point> getBlobBorderPolygon(Size bmpSize, byte[] bmpArr, Point ptStart, int thresholdBlob)
+        List<Point> getFullBeamBorderPolygon(Size bmpSize, byte[] bmpArr, Point ptStart, int thresholdBlob)
         {
             List<Point> polygon = new List<Point>();
             WalkDirection wd = WalkDirection.ILLEGAL;
@@ -1889,7 +1996,7 @@ namespace GrzBeamProfiler
                 // get state of a '4 pixel matrix'
                 int state = getPixelState(bmpSize, bmpArr, pt, thresholdBlob);
                 if ( (state == 0) || (state == 15) ) {
-                    // severe failure, meaning all 4 pixels are set OR none is set
+                    // all 4 pixels are set (15) OR none is set (0)
                     break;
                 } else {
                     // add point to polygon list
@@ -1976,24 +2083,15 @@ namespace GrzBeamProfiler
             return polygon;
         }
 
-        // helper class containing points
-        class Trace
-        {
-            public List<Point> Points { get; set; }
-            public Trace()
-            {
-                Points = new List<Point>();
-            }
-        }
         // helper class containing points and the comprising area of all collected points
         class Blob
         {
-            public List<Point> Points { get; set; }
-            public Rectangle Area { get; set; }
+            public PowerDistribution pd { get; set; }
+            public List<Point> SearchTrace { get; set; }
             public Blob()
             {
-                Points = new List<Point>();
-                Area = new Rectangle();
+                pd = new PowerDistribution();
+                SearchTrace = new List<Point>();
             }
         }
 
@@ -2007,10 +2105,10 @@ namespace GrzBeamProfiler
         //         - break after a certain amount of hot pixels was found (makes method faster)
         //         - or break if the length of the Ulam spiral became too long
         //
-        List<Point> getPixelsAlongUlamSpiral(Size bmpSize, byte[] bmpArr, int thresholdBlob)
+        Blob getPixelsAlongUlamSpiral(Size bmpSize, byte[] bmpArr, int thresholdBlob)
         {
             int ULAMGRIDSIZE = bmpSize.Height < 400 ? 1 : 3;
-            int width = bmpSize.Width * 3;
+            int width = bmpSize.Width;
 
             // default beam search starts from image center, both other cases should be rather seldom
             Point imageCenterOffset = new Point();
@@ -2027,23 +2125,22 @@ namespace GrzBeamProfiler
             // focus on the 1st beam blob near to the center of the image
             Blob blob = new Blob();
 
-            // only for DEBUG / INFO purposes 
-            Trace trace = new Trace();
-
             // set a limit (length of a ulam edge) depending on the image size
             int lenEdgeLimit = bmpSize.Width / 2 + Math.Abs(imageCenterOffset.X);
 
             //
-            // a 1st step just just searches for a hot pixel (thresholdBlob), which triggers the re start of the ulam spiraling
+            // a 1st step just searches for hot pixels (> thresholdBlob), which triggers the re start of the ulam spiraling
             // ulam spiral mode control:
-            //      initially search a hot pixel --> do 'outer spiral'
-            //      if hot pixel was found       --> do 'blob mode' 
+            //      initially search a hot pixel --> do 'outer blob spiral'
+            //      if hot pixel was found       --> do 'inner blob spiral' 
             // 
-            SpiralMode spiralMode = SpiralMode.SEARCH_HOT;         
+            SpiralMode spiralMode = SpiralMode.SEARCH_HOT;
+            int hitCounter = 0;
+            int hitCounterGoal = (int)(Math.Pow(_settings.BeamMinimumDiameter / ULAMGRIDSIZE, 2) * 0.1f);
 
             // 'blob spiral' specific
             int  blobSpiralPixelCount = 0;   // pixel count in current spiral
-            int  blobSpiralFailCount = 0;    // 'blob spiral' collected number of either 'non hot pixels' or 'blob non consecutive hot pixels' 
+            int  blobSpiralFailCount = 0;    // 'blob spiral' collected number of 'non hot pixels'
             bool blobOneSpiralDone = false;  // flag after a full ulam spiral is executed
 
             // common ulam spiral control vars
@@ -2053,6 +2150,9 @@ namespace GrzBeamProfiler
             int  lenEdge = 1;                // Ulam sequence: 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, ...     --> one sequence per X and one sequence per Y
             int  lenEdgeNdx = 0;             // Ulam sequence index
 
+            // add noise
+            thresholdBlob = Math.Min(thresholdBlob + 10, 255);
+
             // ulam spiral loop
             do {
 
@@ -2060,67 +2160,42 @@ namespace GrzBeamProfiler
                 ulamPt.X = Math.Max(Math.Min(ulamPt.X, bmpSize.Width - 1), 0);
                 ulamPt.Y = Math.Max(Math.Min(ulamPt.Y, bmpSize.Height - 1), 0);
                 
-                // trace shows, how the search was executed
-                if ( _settings.DebugSearchTrace ) {
-                    trace.Points.Add(new Point(ulamPt.X, ulamPt.Y));
+                // trace shows, how the initial search was executed
+                if ( _settings.SearchTraces || _beamSearchError ) {
+                    blob.SearchTrace.Add(new Point(ulamPt.X, ulamPt.Y));
                 }
                 
                 // calculate current pixel position in the image byte array
-                int pos = ulamPt.Y * width + ulamPt.X * 3;
+                int pos = ulamPt.Y * width + ulamPt.X;
 
                 // check current pixel for a 'hot pixel' threshold hit
-                byte value = bmpArr[pos];
-                if ( value >= thresholdBlob ) {
+                byte pixelIntensity = bmpArr[pos];
+                if ( pixelIntensity >= thresholdBlob ) {
 
-                    // once a 1st hot pixel is detected, the whole spiral re starts: it's to assume, the found hot pixel belongs to a blob   
+                    // do not rely on a random single hot pixel
+                    hitCounter++;
+
+                    // outer spiral
                     if ( spiralMode == SpiralMode.SEARCH_HOT ) {
-                        spiralMode = SpiralMode.BUILD_BLOB;
-                        blob.Points.Clear();
-                        dueX = true;
-                        down = false;
-                        left = false;
-                        lenEdge = 1;
-                        lenEdgeNdx = 0;
-                    }
-
-                    // build an area (Rectangle) containing the hot pixel, needed to check whether a hot pixel is a consecutive hot pixel to the blob
-                    Rectangle blobArea = new Rectangle();
-                    if ( blob.Points.Count == 0 ) {
-                        blobArea = new Rectangle(ulamPt.X - ULAMGRIDSIZE, ulamPt.Y - ULAMGRIDSIZE, 2 * ULAMGRIDSIZE, 2 * ULAMGRIDSIZE);
-                    } else {
-                        blobArea = blob.Area;
-                    }
-
-                    // add hot pixel position & its area to the blob
-                    if ( blobArea.Contains(ulamPt) ) {
-                        blobSpiralFailCount--;
-                        blob.Points.Add(ulamPt);
-                        blob.Area = blobArea;
-                        // increase blob area, taking the just added hot pixel into account
-                        if ( blob.Area.Left + ULAMGRIDSIZE == ulamPt.X ) {
-                            blob.Area = new Rectangle(Math.Max(0, blob.Area.Left - ULAMGRIDSIZE), blob.Area.Top, blob.Area.Width + ULAMGRIDSIZE, blob.Area.Height);
-                        }
-                        if ( blob.Area.Right - ULAMGRIDSIZE == ulamPt.X ) {
-                            blob.Area = new Rectangle(blob.Area.Left, blob.Area.Top, blob.Area.Width + ULAMGRIDSIZE, blob.Area.Height);
-                        }
-                        if ( blob.Area.Top + ULAMGRIDSIZE == ulamPt.Y ) {
-                            blob.Area = new Rectangle(blob.Area.Left, Math.Max(0, blob.Area.Top - ULAMGRIDSIZE), blob.Area.Width, blob.Area.Height + ULAMGRIDSIZE);
-                        }
-                        if ( blob.Area.Bottom - ULAMGRIDSIZE == ulamPt.Y ) {
-                            blob.Area = new Rectangle(blob.Area.Left, blob.Area.Top, blob.Area.Right, blob.Area.Height + ULAMGRIDSIZE);
-                        }
-                    } else {
-                        // it's a hot pixel, but it does not belong to the blob (it's a non consecutive hot pixel)
-                        if ( spiralMode == SpiralMode.BUILD_BLOB ) {
-                            blobSpiralFailCount++;
+                        if ( hitCounter > hitCounterGoal ) {
+                            // once a couple of safe hot pixels are detected, the whole spiral re starts assuming, the found hot pixel belongs to a blob   
+                            spiralMode = SpiralMode.BUILD_BLOB;
+                            blob.pd = new PowerDistribution();
+                            dueX = true;
+                            down = false;
+                            left = false;
+                            lenEdge = 1;
+                            lenEdgeNdx = 0;
+                            hitCounter = 0;
                         }
                     }
-
-                    //
-                    // let's limit the blob build: if the blob contains ca. nn hot pixel positions at the same intensity, it is 'a good blob'
-                    //
-                    if ( blob.Points.Count > 500 ) {
-                        break;
+                    // inner spiral
+                    if ( spiralMode == SpiralMode.BUILD_BLOB ) {
+                        blob.pd.array[pixelIntensity].Add(ulamPt);
+                        // let's limit the blob build: if the blob contains ca. nn hot pixel positions at the same intensity, it is 'a good blob'
+                        if ( hitCounter > 500 ) {
+                            break;
+                        }
                     }
 
                 } else {
@@ -2149,9 +2224,9 @@ namespace GrzBeamProfiler
                     } else {
                         ulamPt.Y -= ULAMGRIDSIZE;   // move up
                         // 'blob mode' specific: conditions after a full spiral is drawn
-                        if ( (spiralMode == SpiralMode.BUILD_BLOB) && (lenEdgeNdx == 0) && (blob.Points.Count > 2) ) {
-                            blobOneSpiralDone = true;
-                        }
+                        //if ( (spiralMode == SpiralMode.BUILD_BLOB) && (lenEdgeNdx == 0) && (blob.SearchPoints.Count > 2) ) {
+                        //    blobOneSpiralDone = true;
+                        //}
                     }
                     lenEdgeNdx++;
                     if ( lenEdgeNdx >= lenEdge ) {
@@ -2179,96 +2254,85 @@ namespace GrzBeamProfiler
                     blobSpiralPixelCount++;
                 }
 
-            } while ( lenEdge < lenEdgeLimit ); // finally give up, if the Ulam length reaches ca. 1/2 of the image width
+            // finally give up, if the Ulam length reaches ca. 1/2 of the image width
+            } while ( lenEdge < lenEdgeLimit );
 
-            // normally one would like to see the blob, but the search trace is a good debugging tool
-            if ( _settings.DebugSearchTrace ) {
-                return trace.Points;
+            // no beam with requested min diameter was found
+            if ( spiralMode == SpiralMode.SEARCH_HOT ) {
+                _beamSearchError = true;
+                _headlineAlert = String.Format("--- No beam with requested minimum diameter of {0} pixels found ---", _settings.BeamMinimumDiameter);
             } else {
-                return blob.Points;
+                _beamSearchError = false;
             }
+
+            // 
+            return blob;
         }
 
         //
-        // analyze the found beam blob
+        // get beam power
         //
-        double getPowerAlongUlamSpiral(
-            Size bmpSize,                // current Bitmap size   
-            byte[] bmpArr,               // Bitmap raw data array
-            int thresholdBlob,           // all above threshold is a beam
-            Point center,                // beam center coordinates
-            double stopPower,            //
-            int maxDiameter,             //
-            out byte pixelPower,         // 
-            out int diameter,            //
-            out List<Point> allPts,      //
-            out List<Point> subPolygon)  //
+        // helper class: array of 256 possible power levels holds matching pixel coordinates in a list per level
+        class PowerDistribution {
+            public List<Point>[] array = new List<Point>[256];
+            public PowerDistribution() {
+                for ( int i = 0; i < 256; i++ ) {
+                    array[i] = new List<Point>();
+                }
+            }
+        }
+        double getBeamPower(
+            Size bmpSize,                              // current Bitmap size   
+            byte[] bmpArr,                             // Bitmap raw data array
+            int thresholdBeam,                         // all above threshold is a beam
+            Point centerBeam,                          // beam center coordinates
+            out PowerDistribution pd,                  // pixel power distribution
+            out int powerCountFull)                    // count of pixels matching >=min power threshold   
         {
 
-            int ULAMGRIDSIZE = 1;
-            int width = bmpSize.Width * 3;
-            pixelPower = 0;
-            double power = 0;
-            diameter = 0;
-            allPts = null;
-            bool getPts = false;
-            if ( stopPower != double.MaxValue ) {
-                getPts = true;
-                allPts = new List<Point>();
-            }
+            powerCountFull = 0;
+            double sumPower = 0;                       // sum of all pixel power values
+            Point ulamPt = centerBeam;                 // beam center coordinates  
+            pd = new PowerDistribution();
 
-            // set a limit
-            int lenEdgeLimit = bmpSize.Width / 2;
-            bool fstSpiral = true;
-            int blobSpiralFailCount = 0;
-            bool fullSpiral = false;
-            int spiral = 0;
-            Point ulamPt = center;
-            bool dueX = true;        // affect X or Y
-            bool down = false;       // if Y is affected, then down or up
-            bool left = false;       // if X is affected, then left or right
-            int lenEdge = 1;         // Ulam sequence: 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, ... 
-            int lenEdgeNdx = 0;      // Ulam sequence index
-            bool triggerShape = true;
-            subPolygon = new List<Point>();
+            // Ulam spiral controls
+            int width = bmpSize.Width;
+            int lenEdgeLimit = bmpSize.Width;          // set a Ulam limit
+            int spiralStep = 0;                        // step counter for one spiral
+            int blobSpiralFailCount = 0;               // number of power mismatches along one spiral
+            int ULAMGRIDSIZE = 1;                      // pixel precise with no jumps
+            bool fstSpiral = true;                     // Ulam starting is tricky
+            bool fullSpiral = false;                   // one full spiral is drawn
+            bool dueX = true;                          // affect X or Y
+            bool down = false;                         // if Y is affected, then down or up
+            bool left = false;                         // if X is affected, then left or right
+            int lenEdge = 1;                           // Ulam sequence: 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, ... 
+            int lenEdgeNdx = 0;                        // Ulam sequence index
+
+            // Ulam loop
             do {
                 // calculate current pixel position in the byte array
-                int pos = ulamPt.Y * width + ulamPt.X * 3;
+                int pos = ulamPt.Y * width + ulamPt.X;
                 // check current pixel for a brightness hit
-                byte value = 0;
+                byte currentPixelIntensity = 0;
                 if ( (pos > 0) && (pos < bmpArr.Length) ) {
-                    value = bmpArr[pos];
+                    currentPixelIntensity = bmpArr[pos];
                 }
-                if ( value >= thresholdBlob ) {
-                    if ( getPts ) {
-                        allPts.Add(ulamPt);
-                    }
+                // intensity hit ?
+                if ( currentPixelIntensity >= thresholdBeam ) {
+                    // add Point at the matching intensity level
+                    pd.array[currentPixelIntensity].Add(ulamPt);
                     blobSpiralFailCount--;
-                    power += value;
-                    if ( power >= stopPower ) {
-                        pixelPower = value;
-                        diameter = lenEdge;
-                        if ( getPts ) {
-                            int stop = Math.Min(4 * diameter, allPts.Count - 1);
-                            int ofs = allPts.Count - 1;
-                            for ( int i = 0; i < stop; i++ ) {
-                                subPolygon.Add(allPts[ofs - i]);
-                            }
-                        }
-                        break;
-                    }
-                    if ( !triggerShape ) {
-                        subPolygon.Add(ulamPt);
-                        triggerShape = true;
-                    }
+                    sumPower += currentPixelIntensity;
+                    powerCountFull++;
                 } else {
+                    // curent pixel power too low
                     blobSpiralFailCount++;
-                    if ( triggerShape ) {
-                        subPolygon.Add(ulamPt);
-                        triggerShape = false;
-                    }
                 }
-                // move pixel coordinate
+
+                //
+                // Ulam control: move pixel coordinate
+                //
                 if ( dueX ) {                        // move X
                     if ( left ) {                    // move left
                         ulamPt.X -= ULAMGRIDSIZE;
@@ -2303,102 +2367,173 @@ namespace GrzBeamProfiler
                     }
                 }
                 // break if a full spiral is drawn and no hot pixel was found 
-                if ( fullSpiral && (blobSpiralFailCount >= spiral) ) {
-                    pixelPower = value;
-                    diameter = lenEdge;
+                if ( fullSpiral && (blobSpiralFailCount >= spiralStep) ) {
                     break;
                 }
-                // break if lenEdge (aka blob diameter) exceeds the blob surrounding circle
-                if ( lenEdge >= maxDiameter ) {
-                    pixelPower = value;
-                    diameter = lenEdge;
-                    break;
-                }
-                // next spiral: reset spiral counter + fail counter + full spiral flag
+                // next spiral: reset spiral step counter + fail counter + full spiral flag
                 if ( fullSpiral ) {
                     blobSpiralFailCount = 0;
                     fullSpiral = false;
-                    spiral = 0;
+                    spiralStep = 0;
                 }
                 // each move is a pixel along the spiral
-                spiral++;
+                spiralStep++;
 
-            } while ( lenEdge < lenEdgeLimit );      // finally give up, if the Ulam length reaches ca. 1/2 of the image width
+            // finally give up, if the Ulam length reaches ca. 1/2 of the image width 
+            } while ( lenEdge < lenEdgeLimit );
 
             // sanity check
             if ( lenEdge >= lenEdgeLimit ) {
-                diameter = -1;
+                pd = new PowerDistribution();
             }
 
-            return power;
+            return sumPower;
+        }
+
+        // find a convex hull to a list of points
+        // https://stackoverflow.com/questions/14671206/how-to-compute-convex-hull-in-c-sharp
+        class ConvexHull {
+            private static double cross(Point O, Point A, Point B) {
+                return (A.X - O.X) * (B.Y - O.Y) - (A.Y - O.Y) * (B.X - O.X);
+            }
+            public static List<Point> GetConvexHull(List<Point> points) {
+                if ( points == null )
+                    return null;
+                if ( points.Count() <= 1 )
+                    return points;
+                int n = points.Count(), k = 0;
+                List<Point> H = new List<Point>(new Point[2 * n]);
+                points.Sort((a, b) => a.X == b.X ? a.Y.CompareTo(b.Y) : a.X.CompareTo(b.X));
+                // Build lower hull
+                for ( int i = 0; i < n; ++i ) {
+                    while ( k >= 2 && cross(H[k - 2], H[k - 1], points[i]) <= 0 )
+                        k--;
+                    H[k++] = points[i];
+                }
+                // Build upper hull
+                for ( int i = n - 2, t = k + 1; i >= 0; i-- ) {
+                    while ( k >= t && cross(H[k - 2], H[k - 1], points[i]) <= 0 )
+                        k--;
+                    H[k++] = points[i];
+                }
+                return H.Take(k).ToList();
+            }
+        }
+
+        // median
+        static int getMedian(int[] sourceNumbers) {
+            // sanity
+            if ( sourceNumbers == null || sourceNumbers.Length == 0 ) {
+                return -1;
+            }
+            // make sure the list is sorted, but use a new array
+            int[] sortedNumbers = (int[])sourceNumbers.Clone();
+            Array.Sort(sortedNumbers);
+            // get the median
+            int size = sortedNumbers.Length;
+            int mid = size / 2;
+            int median = (size % 2 != 0) ? (int)sortedNumbers[mid] : ((int)sortedNumbers[mid] + (int)sortedNumbers[mid - 1]) / 2;
+            return median;
         }
 
         //
         // detect a blob inside an image
         //
-        // params:  bitmap size, byte[] - all bitmap pixels as 3 bytes per pixel, beam power threshold, min. beam diameter
-        // out:     List<Point> - polygon enclosing blob, PointF - centroid of the polygon blob, EllipseParam - best fit ellipse to polygon in canonical form
+        // params:  bitmap size, byte[] - all bitmap pixels as 1 byte per pixel, beam intensity threshold, min. beam diameter
+        // out:     List<Point> polygon - blob border/blob  search/blob power/sub beam hull, int crosshairDiameter, Emgu.CV.Structure.Ellipse - ellipse fitted to polygon
         // return:  error code
-        int getBeamBlob(Size bmpSize, byte[] bmpArr, int beamPowerThreshold, int minBeamDiameter, out List<Point> polygon, out PointF centroid, out EllipseParam ep) {
-
+        int getBeamBlob(Size bmpSize, byte[] bmpArr, int beamIntensityThreshold, int minBeamDiameter,
+                        out List<Point> polygon, out int crosshairDiameter, out Emgu.CV.Structure.Ellipse epCv) 
+        {
             polygon = null;
-            centroid = new PointF();
-            ep = new EllipseParam();
+            crosshairDiameter = 0;
+            epCv = new Emgu.CV.Structure.Ellipse();
             int errorCode = 0;
-            int width = bmpSize.Width * 3;
+            int width = bmpSize.Width;
+
+            _headlineAlert = "";
+
+#if DEBUG
+            _sw.Restart();
+#endif
 
             //
-            // search for a reasonable blob (pixel positions having the same or higher intensity) beginning from a given center of the image following an Ulam spiral
+            // search for a reasonable blob
             //
-            List<Point> centerBlob = getPixelsAlongUlamSpiral(bmpSize, bmpArr, beamPowerThreshold);
-            // sort pixels by Y and after that by X
-            if ( !_settings.DebugSearchTrace || !_settings.DebugUlamSpiral ) {
-                centerBlob = centerBlob.OrderBy(p => p.Y).ThenBy(p => p.X).ToList();
-            }
+            // pixels having the same or higher intensity as beamIntensityThreshold
+            // begins from a given position in the image following an Ulam spiral
+            Blob blob = getPixelsAlongUlamSpiral(bmpSize, bmpArr, beamIntensityThreshold);
+
+#if DEBUG
+            double blobTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
 
             //
-            // Blob Border Walker - supposed to find a polygon matching the blob border
-            //                    - kown issue: very rough borders occasionally provide a closed polygon NOT describing the real blob
-            //                                  --> for the affected image, the border polygon/ellipse is MUCH SMALLER than expected 
-            //                                  --> therefore we allow up to 20 repititions if minBlobBorderPixelCount is not met, then we give up 
-            //                                  --> minBlobBorderPixelCount provides a threshold for a minimal required pixel count inside a blob   
+            // Blob Border Walker
             //
-            if ( centerBlob.Count == 0 ) {
-                return -2;
+            // - supposed to find a polygon rendering the blob border
+            // - kown issue: very rough borders occasionally provide a closed polygon NOT describing the real blob
+            //               --> for the affected image, the border polygon/ellipse is MUCH SMALLER than expected 
+            //               --> therefore we allow up to 20 repetitions if minBlobBorderPixelCount is not met, then we give up 
+            //               --> minBlobBorderPixelCount provides a threshold for a minimal required pixel count inside a blob   
+            // get index with largest number of pixel intensities: supposed to be the most trustworthy collection
+            int maxPointCountAtIntensity = 0;
+            int maxPointCount = 0;
+            for( int i=0; i< blob.pd.array.Length; i++ ) {
+                if ( blob.pd.array[i].Count > maxPointCount ) {
+                    maxPointCount = blob.pd.array[i].Count;
+                    maxPointCountAtIntensity = i;
+                }
             }
-            int tryCount = 0;
-            Point ulamPt = centerBlob[centerBlob.Count / 2];
-            polygon = new List<Point>();
-            int state;
+            // get start coordinate: median shall eliminate random hot pixel positions
+            int ndx = 0;
+            int[] xArr = new int[blob.pd.array[maxPointCountAtIntensity].Count];
+            int[] yArr = new int[blob.pd.array[maxPointCountAtIntensity].Count];
+            foreach ( Point pt in blob.pd.array[maxPointCountAtIntensity] ) {
+                xArr[ndx] = pt.X;
+                yArr[ndx] = pt.Y;
+                ndx++;
+            }
+            Point ulamPt = new Point(getMedian(xArr), getMedian(yArr));
             // border walker loop
+            int tryCount = 0;
+            polygon = new List<Point>();
+            List<List<Point>> polygonList = new List<List<Point>>();
+            int state;
             do {
-                // 1st step: we start with a state == 15 pixel; now find a blob border pixel with 'state != 15'; means not all 4 pixels are set --> makes sure we hit the blob border
+                // 1st step:
+                //     start with a pixel of known state == 15 (aka pixel belongs to the blob --> ulamPt)
+                //     find a blob pixel with 'state != 15' (aka not all 4 pixels are set --> we hit the blob border)
                 state = 0;
                 do {
-                    state = getPixelState(bmpSize, bmpArr, ulamPt, beamPowerThreshold);
+                    state = getPixelState(bmpSize, bmpArr, ulamPt, beamIntensityThreshold);
                     if ( state == 15 ) {
+                        // simply walk straight up
                         ulamPt.Y--;
                     }
                 } while ( state == 15 );
-                // 2nd step: execute the 'blob border walker' algorithm
-                polygon = getBlobBorderPolygon(bmpSize, bmpArr, ulamPt, beamPowerThreshold);
-                //
+                // 2nd step:
+                //     execute the 'blob border walker' algorithm
+                polygon = getFullBeamBorderPolygon(bmpSize, bmpArr, ulamPt, beamIntensityThreshold);
                 // something is wrong, if the real enclosing polygon has less points than the calculated circumference 'Math.PI * minBlobDiameter'
-                //
+                //     cause: the state != 15 might come from an isolated pixel
+                //     fix:   variation of start point 
                 if ( polygon.Count < Math.PI * minBeamDiameter ) {
+                    polygonList.Add(polygon);
                     // we try it again for a total of 20 times 
                     tryCount++;
                     if ( tryCount < 10 ) {
                         // slightliy outside the center +
-                        if ( centerBlob.Count / 2 + tryCount < centerBlob.Count ) {
-                            ulamPt = centerBlob[centerBlob.Count / 2 + tryCount];
+                        if ( ulamPt.X + tryCount < bmpSize.Width && ulamPt.Y + tryCount < bmpSize.Height ) {
+                            ulamPt.Offset(tryCount, tryCount);
                         } else {
                             break;
                         }
                     } else {
                         // slightliy outside the center -
-                        if ( centerBlob.Count / 2 - tryCount > 0 ) {
-                            ulamPt = centerBlob[centerBlob.Count / 2 - tryCount];
+                        if ( ulamPt.X - tryCount > 0 && ulamPt.Y - tryCount > 0 ) {
+                            ulamPt.Offset(-1 * tryCount, -1 * tryCount);
                         } else {
                             break;
                         }
@@ -2408,125 +2543,214 @@ namespace GrzBeamProfiler
                 }
             } while ( tryCount < 20 );
             if ( tryCount >= 20 ) {
-                ;
+                _headlineAlert = String.Format("--- Critical setting: meam minimum diameter of {0} pixels ---", _settings.BeamMinimumDiameter);
+            }
+            if ( polygon.Count == 0 ) {
+                polygon = polygonList.OrderByDescending(x => x.Count).First().ToList();
+            }
+            if ( !_beamSearchError ) {
+                if ( polygon.Count == 0 ) {
+                    _headlineAlert = String.Format("--- No beam with minimum diameter of {0} pixels found ---", _settings.BeamMinimumDiameter);
+                }
             }
             errorCode += tryCount;
 
-            //
-            // get blob's centroid (aka center of gravity)
-            //
-            centroid = getCentroid(polygon);
+#if DEBUG
+            double borderTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Start();
+#endif
 
             //
-            // compute power of the blob and its diameter
+            // get blob's preliminary center: centroid is the surrounding polygon's gravity center
             //
-            // initially set to max int; it only gets smaller if a comprising circle (instead of Ulam) is requested 
-            int maxDiameter = int.MaxValue;
+            Point centroid = getCentroid(polygon);
 
-            // get full power along a Ulam spiral; use beamPowerThreshold as minimal pixel power limit; maxDiameter as geometrical limit; no total power limit;
-            Point centerPt = new Point((int)centroid.X, (int)centroid.Y);
-            List<Point> subBlob = null;
-            List<Point> subPolygon = null;
-            int allDiam = 0;
-            byte pixelPower = 0;
-            double powerAll = getPowerAlongUlamSpiral(_bmpSize, _bmpArr, beamPowerThreshold, centerPt, double.MaxValue, maxDiameter, out pixelPower, out allDiam, out subBlob, out subPolygon);
-            
-            // calculate the beam power according to a selected algorithm --> powerSub
-            double powerSub = powerAll;
-            switch ( _settings.BeamDiameterType ) {
-                case AppSettings.BeamDiameter.FWHM: powerSub = powerAll * 0.5; break;
-                case AppSettings.BeamDiameter.ReverseEulerSquare: powerSub = powerAll * 0.865f; ; break;
-                case AppSettings.BeamDiameter.D86: powerSub = powerAll * 0.86f; break;
+#if DEBUG
+            double centroidTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
+
+            //
+            // get full beam's enclosing rectangle
+            //
+            Rectangle fullBeamRect = new Rectangle();
+            if ( polygon.Count > 0 ) {
+                var minX = polygon.Min(p => p.X);
+                var minY = polygon.Min(p => p.Y);
+                var maxX = polygon.Max(p => p.X);
+                var maxY = polygon.Max(p => p.Y);
+                fullBeamRect = new Rectangle(minX, minY, maxX - minX, maxY - minY);
+            }
+            if ( fullBeamRect.Width > (int)((float)_bmpSize.Width * 0.8f) || fullBeamRect.Height > (int)((float)_bmpSize.Height * 0.8f) ) {
+                _headlineAlert = String.Format("--- Camera exposure time to long? Beam to large? ---");
             }
 
-            // get power along an Ulam spiral other than above:
-            // now use subPower as a total power limit AND return last Ulam length as the circle diameter at reduced total power AND return subBlob points
-            int finDiam = 0;
-            double powerFin = getPowerAlongUlamSpiral(_bmpSize, _bmpArr, beamPowerThreshold, centerPt, powerSub, maxDiameter, out pixelPower, out finDiam, out subBlob, out subPolygon);
-            _ep.power = (ulong)powerFin;  // ellipse has a total power value
-            _ep.pixelPower = pixelPower;  // gray value at ellipse diameter shall be used to determine the ellipse color 
+#if DEBUG
+            double enclosingTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
 
-            // take take the subPolygon and fit an ellipse to it
-            FitEllipse.PointCollection points = new FitEllipse.PointCollection();
-            foreach ( Point pt in subPolygon ) {
-                points.Add(new FitEllipse.Point() { X = pt.X, Y = pt.Y });
-            }
-            try {
-                FitEllipse.EllipseFit fit = new FitEllipse.EllipseFit();
-                FitEllipse.Matrix ellipse = null;
-                ellipse = fit.Fit(points);
-                double A = ellipse.data[0, 0];
-                double B = ellipse.data[1, 0];
-                double C = ellipse.data[2, 0];
-                double D = ellipse.data[3, 0];
-                double E = ellipse.data[4, 0];
-                double F = ellipse.data[5, 0];
-                int cX = (int)ellipse.data[6, 0];
-                int cY = (int)ellipse.data[7, 0];
-                // https://en.wikipedia.org/wiki/Ellipse#Canonical_form
-                // http://mathworld.wolfram.com/Ellipse.html - introduces corrected theta calculation 
-                double term1 = 2 * (A * E * E + C * D * D - B * D * E + (B * B - 4 * A * C) * F);
-                double term2 = Math.Sqrt((A - C) * (A - C) + B * B);
-                double term3 = B * B - 4 * A * C;
-                if ( term3 == 0 ) {
-                    term3 = 1;
-                }
-                double a = -1 * Math.Sqrt(term1 * (A + C + term2)) / term3;
-                double b = -1 * Math.Sqrt(term1 * (A + C - term2)) / term3;
-                if ( B == 0 ) {
-                    B = 1;
-                }
-                double tangent = (C - A - Math.Sqrt((A - C) * (A - C) + B * B)) / B;
-                double theta = 0;
-                if ( B == 0.0f ) {
-                    theta = (A < C) ? 0 : 90;
-                } else {
-                    if ( A == C ) {
-                        theta = 0;
-                    } else {
-                        if ( A > C ) {
-                            theta = (Math.Atan(2 * B / (A - C)) / 2) * (180.0 / Math.PI);
-                            double tmp = a;
-                            a = b;
-                            b = tmp;
-                        } else {
-                            theta = (Math.PI / 2 + Math.Atan(2 * B / (A - C)) / 2) * (180.0 / Math.PI);
-                            theta += 90;
+            //polygon = ConvexHull.GetConvexHull(polygon);
+
+            //
+            // beam power
+            //
+            // get full power along a Ulam spiral; use beamIntensityThreshold as minimal pixel power limit
+            PowerDistribution pdFull;
+            int powerCountFull;
+            double powerFull = getBeamPower(_bmpSize, _bmpArr, beamIntensityThreshold, centroid,
+                                            out pdFull, out powerCountFull);
+
+#if DEBUG
+            double powerTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
+
+            //
+            // sub beam is a part of the full beam
+            //
+            List<Point> subBeam = new List<Point>();                                    // list of subBeam coordinates
+            int highestPoulatedIntensityLevel = -1;                                     // beam's largest populated intensity level
+            List<Point> peakIntensityPoints = new List<Point>();                        // list of points containing the beam's peak intensity coordinates 
+            int powerCumulative = 0;                                                    // cumulative power in subBeam
+            double powerFraction =                                                      // D86 vs. FWHM vs. D4SIGMA    
+                _settings.BeamDiameterType == AppSettings.BeamDiameter.FWHM ? 0.5f :    // FWHM     50%
+                _settings.BeamDiameterType == AppSettings.BeamDiameter.D86  ? 0.865f :  // D86      86.5%
+                1.0f;                                                                   // D3SIGMA 100% (ok, that's sort of cheating)  
+            double powerSub = powerFull * powerFraction;                                // beam power goal according to beam width calculation method
+            int subPowerLevelLowest = 0;                                                // lowest used intensity level  
+            int subPowerLevelLatestLoopNdx = 0;                                         // point/pixel index inside of the lowest used intensity level
+
+            // loop pdFull intensity level array backwards to catch the largest intensity levels first
+            for ( int intensityLevel = pdFull.array.Length - 1; intensityLevel >= 0; intensityLevel-- ) {
+                // iterator for pixels at given intensity level
+                int i = 0;
+                // loop pdFull list of points belonging to one intensity level
+                foreach ( Point p in pdFull.array[intensityLevel] ) {
+                    // get highest intensity level
+                    if ( highestPoulatedIntensityLevel == -1 && pdFull.array[intensityLevel].Count > 0 ) {
+                        highestPoulatedIntensityLevel = intensityLevel;
+                        _beamPeakIntensity = (byte)intensityLevel;
+                    }
+                    if ( highestPoulatedIntensityLevel != -1 ) { 
+                        // sum up intensities to a cumulative power
+                        powerCumulative += intensityLevel;
+                        // collect beam's peak intensity points to be able to later calculate an averaged peak intensity position
+                        if ( highestPoulatedIntensityLevel == intensityLevel ) {
+                            peakIntensityPoints.Add(p);
                         }
                     }
+                    // break if powerCumulative exceeds limit goal
+                    if ( powerCumulative >= powerSub ) {
+                        subPowerLevelLowest = intensityLevel;
+                        subPowerLevelLatestLoopNdx = i;
+                        break;
+                    }
+                    // next pixel index at given intensity level
+                    i++;
                 }
-                _ep.center = new Point(cX, cY);
-                _ep.a = (int)a;
-                _ep.b = (int)b;
-                _ep.theta = Math.Round(theta);
-            } catch ( Exception fe ) {
-                ;
+                // break if power limit according to FWHM or D86 is met
+                if ( powerCumulative >= powerSub ) {
+                    break;
+                }
             }
 
-// debug show sub Ulam spiral's recently built polygon
-//polygon = subPolygon;
+            // the beam's intensity peak point is the average of peak intensity locations
+            _peakCenterSub = new Point();
+            foreach ( Point p in peakIntensityPoints ) {
+                _peakCenterSub.X += p.X;
+                _peakCenterSub.Y += p.Y;
+            }
+            _peakCenterSub.X = (int)((double)_peakCenterSub.X / (double)peakIntensityPoints.Count);
+            _peakCenterSub.Y = (int)((double)_peakCenterSub.Y / (double)peakIntensityPoints.Count);
 
-            // show result of ULAM spiral instead of blob border polygon
-            if ( _settings.DebugUlamSpiral ) {
-                polygon = centerBlob;
+            // build the subBeam hull
+            // use the lowest subPowerD86Level + its loop index (could be incomplete) and the full predecessor to the lowest power level (is complete, but intensity wise too high)
+            //     subBeam is almost a hull around the calculated beam power goal
+            //     subBeam contains a heavily reduced number of point compared to all coordinates belonging to the sub beam
+            // subBeam perimeter #1: might be incomplete due to abortion at subPowerD86LevelLatestLoopNdx
+            for ( int i = 0; i < subPowerLevelLatestLoopNdx; i++ ) {
+                subBeam.Add(pdFull.array[subPowerLevelLowest][i]);
+            }
+            // subBeam perimeter #2: use full predecessor to the lowest power level
+            int powerLevelMinusOne = Math.Max(0, subPowerLevelLowest - 1);
+            foreach ( Point pt in pdFull.array[powerLevelMinusOne] ) {
+                subBeam.Add(pt);
+            }
+            // gray value at ellipse perimeter, supposed to be used to determine the ellipse's drawing color 
+            _beamEllipseBorderIntensity = (byte)powerLevelMinusOne;
+            // sub beam power value
+            _beamEllipsePower = (ulong)powerSub;
+
+            // sanity check: if a beam comprises more than 10 % of the total bitmap area, it's likely that something is worong
+            if ( powerCountFull > _bmpArr.Length / 3 ) {
+                _headlineAlert = String.Format("--- Camera exposure time to long? ---");
+            }
+
+#if DEBUG
+            double subTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
+
+            //
+            // get a convex hull polygon from subBeam pixel coordinates
+            // 
+            List<Point> beamPointsHull = ConvexHull.GetConvexHull(subBeam);
+
+#if DEBUG
+            double hullTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Restart();
+#endif
+
+            //
+            // EmguCV: fit ellipse to the subBeam hull coordinates
+            //
+            try {
+                _epCv = PointCollection.EllipseLeastSquareFitting(beamPointsHull.Select(p => new PointF(p.X, p.Y)).ToArray());
+//                _epCv = PointCollection.EllipseLeastSquareFitting(subBeam.Select(p => new PointF(p.X, p.Y)).ToArray());
+            } catch ( Emgu.CV.Util.CvException cve ) {
+                _headlineAlert = String.Format("--- Bad ellipse data basis ---");
+            }
+            if ( !_beamSearchError ) {
+                if ( _epCv.RotatedRect.Center.X < 50 || _epCv.RotatedRect.Center.Y < 50 || _epCv.RotatedRect.Size.Width > _bmpSize.Width - 50 || _epCv.RotatedRect.Size.Height > _bmpSize.Height - 50 ) {
+                    _headlineAlert = String.Format("--- Bad image ---");
+                }
+            }
+
+#if DEBUG
+            double ellipseTime = _sw.Elapsed.TotalMilliseconds;
+            _sw.Stop();
+            double sumTime = blobTime + borderTime + centroidTime + enclosingTime + powerTime + subTime + hullTime + ellipseTime;
+#endif
+
+            //
+            // beam render options
+            //
+            // crosshair circle diameter needs offset between full beam center and ellipse center
+            int hypFullBeam = (int)Math.Sqrt(fullBeamRect.Width * fullBeamRect.Width + fullBeamRect.Height * fullBeamRect.Height);
+            int hypOffset = GrzTools.PointTools.GetDistance(_epCv.RotatedRect.Center, 
+                                                            new Point(fullBeamRect.X + fullBeamRect.Width / 2, fullBeamRect.Y + fullBeamRect.Height / 2));
+            crosshairDiameter = hypFullBeam + hypOffset;
+            // show beam border
+            polygon = _settings.BeamBorder ? polygon : null;
+            // beam search ULAM spirals
+            if ( _settings.SearchTraces || _beamSearchError ) {
+                polygon = blob.SearchTrace;
+            }
+            // subBeam ellipse power coordinates
+            if ( _settings.EllipsePower ) {
+                polygon = subBeam;
+            }
+            // subBeam points hull as a base for the ellipse
+            if ( _settings.EllipsePointsHull ) {
+                polygon = beamPointsHull;
             }
 
             return errorCode;
         }
 
-        // helper class 
-        class EllipseParam 
-        {
-            public byte pixelPower;
-            public ulong power;
-            public Point center;
-            public int a;
-            public int b;
-            public double theta;
-        }
-
         // return center of gravity of a polygon
-        public static PointF getCentroid(List<Point> poly)
+        public static Point getCentroid(List<Point> poly)
         {
             float accumulatedArea = 0.0f;
             float centerX = 0.0f;
@@ -2540,11 +2764,11 @@ namespace GrzBeamProfiler
             }
 
             if ( Math.Abs(accumulatedArea) < 1E-7f ) {
-                return PointF.Empty;  // Avoid division by zero
+                return Point.Empty;  // Avoid division by zero
             }
 
             accumulatedArea *= 3f;
-            return new PointF(centerX / accumulatedArea, centerY / accumulatedArea);
+            return new Point((int)(centerX / accumulatedArea), (int)(centerY / accumulatedArea));
         }
 
         // tricky: match MainForm size to aspect ratio of pictureBox ( default MainForm 656x578 translates to pictureBox 640x480  -->  voodoo static offsets 16,98 )
@@ -2596,9 +2820,9 @@ namespace GrzBeamProfiler
 
             }
 
-            // take care about the red cross
-            if ( (_redCross == new Point(-1, -1)) || (_redCross.X >= this.pictureBox.ClientSize.Width) || (_redCross.Y >= this.pictureBox.ClientSize.Height) ) {
-                _redCross = new Point(this.pictureBox.ClientSize.Width / 2, this.pictureBox.ClientSize.Height / 2);
+            // take care about the crosshair
+            if ( (_crosshairCenter == new Point(-1, -1)) || (_crosshairCenter.X >= this.pictureBox.ClientSize.Width) || (_crosshairCenter.Y >= this.pictureBox.ClientSize.Height) ) {
+                _crosshairCenter = new Point(this.pictureBox.ClientSize.Width / 2, this.pictureBox.ClientSize.Height / 2);
             }
         }
 
@@ -2606,10 +2830,16 @@ namespace GrzBeamProfiler
         void headLine()
         {
             try {
-                snapshotButton.Enabled = (_bmp != null);
-                string spot = _redCrossFollowsBeam ? "red cross follows beam" : "FIX cross";
-                string file = this.timerStillImage.Enabled ? " - " + System.IO.Path.GetFileName((string)this.timerStillImage.Tag) : "";
-                this.Text = String.Format("Beam Profile  -  screen: {0}x{1}  -  @{2:0.#}fps - {3} {4}", this.pictureBox.Width, this.pictureBox.Height, _fps, spot, file);
+                if ( _headlineAlert.Length == 0 ) {
+                    snapshotButton.Enabled = (_bmp != null);
+                    string txt = _settings.FollowBeam ? "crosshair follows beam" : "FIX cross";
+                    txt += " - " + _settings.BeamDiameterType.ToString();
+                    string file = this.timerStillImage.Enabled ? " - " + System.IO.Path.GetFileName((string)this.timerStillImage.Tag) : "";
+                    string subtraction = _settings.SubtractBackgroundImage ? " - BACKGROUND subtraction" : "";
+                    this.Text = String.Format("Beam Profile  -  screen: {0}x{1}  -  {2:0.0}fps - {3} {4} {5}", this.pictureBox.Width, this.pictureBox.Height, _fps, txt, file, subtraction);
+                } else {
+                    this.Text = _headlineAlert;
+                }
             } catch {
                 this.Text = "headLine() Exception";
             }
@@ -2699,16 +2929,43 @@ namespace GrzBeamProfiler
         {
             // get file/bmp from timer's Tag
             Bitmap bmp = new Bitmap((string)this.timerStillImage.Tag);
+            // wrong image format
+            if ( bmp.PixelFormat != PixelFormat.Format24bppRgb ) {
+                bmp = GrzTools.BitmapTools.ConvertTo24bpp(bmp);
+            }
             // shallow clone is sufficient to avoid exceptions
             _bmp = (Bitmap)bmp.Clone();
             _bmpSize = new Size(bmp.Width, bmp.Height);
-            // force monochrome image 
-            if ( _settings.ForceGray ) {
-                _bmp = MakeGrayscaleGDI(_bmp);
-            }
+            _bmpArr = new byte[bmp.Width * bmp.Height];
+            bool bmpArrFilled = false;
             try {
+                // show native image only
+                if ( this.pictureBox_CmShowNative.Checked ) {
+                    _headlineAlert = "native camera image";
+                    this.pictureBox.Image = _bmp;
+                    return;
+                }
+                // exec background subtraction and build a new bitmap from it
+                if ( _settings.SubtractBackgroundImage && _bmpBkgnd != null ) {
+                    GrzTools.BitmapTools.SubtractBitmap24bppToBitmap24bpp(ref _bmp, _bmpBkgnd);
+                }
+                // force monochrome image 
+                if ( _settings.ForceGray ) {
+                    GrzTools.BitmapTools.Bmp24bppColorToBmp24bppGrayToArray8bppGray(ref _bmp, ref _bmpArr);
+                    bmpArrFilled = true;
+                }
                 // generate pseudo colors if selected
-                _bmp = (Bitmap)convertGrayToPseudoColors(_bmp, _settings.PseudoColors, _filter, out _bmpImageType, out _bmpArr);
+                if ( _settings.PseudoColors ) {
+                    GrzTools.BitmapTools.Bmp24bppColorToBmp24bppPseudoToArray8bppGray(ref _bmp, _pal, ref _bmpArr);
+                    bmpArrFilled = true;
+                }
+                // ensure array 24bpp gray
+                if ( !bmpArrFilled ) {
+                    GrzTools.BitmapTools.Bmp24bppColorToArray8bppGray(_bmp, ref _bmpArr);
+                    bmpArrFilled = true;
+                }
+                // worker
+                pictureBox_PaintWorker();
                 // show image in picturebox
                 this.pictureBox.Image = _bmp;
             } catch { ;}
@@ -2717,12 +2974,23 @@ namespace GrzBeamProfiler
         // picture box show the pseudo color
         private void pictureBoxPseudo_Paint(object sender, PaintEventArgs e)
         {
-            // the current gray level is shown as a marker inside the pseudo color bar
+            // multiplier between pixel intensity value and pixture box dimension
             float corr = (float)(this.pictureBoxPseudo.Width / 256.0f);
-            int xPosLowThreshold = (int)Math.Round((float)_settings.BeamPowerThreshold * corr);
-            e.Graphics.DrawLine(Pens.White, new Point(xPosLowThreshold, 0), new Point(xPosLowThreshold, 24));
-            int xPosHotPixel = (int)Math.Round((float)_centerGrayByte * corr);
+            // get inverted color at ellipse perimeter
+            int xPosEllipse = (int)(_beamEllipseBorderIntensity * corr);
+            Color color = ((Bitmap)this.pictureBoxPseudo.Image).GetPixel(xPosEllipse, 10);
+            _ellipseColorInverted = Color.FromArgb(color.ToArgb() ^ 0xffffff);
+            // show ellipse intensity
+            e.Graphics.DrawLine(Pens.Black, new Point(xPosEllipse, 0), new Point(xPosEllipse, 24));
+            // threshold intensity level is shown as a marker inside the pseudo color bar
+            int xPosLowThreshold = (int)Math.Round((float)_settings.BeamIntensityThreshold * corr);
+            Color colorThreshold = Color.FromArgb(((Bitmap)this.pictureBoxPseudo.Image).GetPixel(xPosLowThreshold, 10).ToArgb() ^ 0xffffff);
+            _thresholdPen.Color = colorThreshold;
+            e.Graphics.DrawLine(_thresholdPen, new Point(xPosLowThreshold, 0), new Point(xPosLowThreshold, 24));
+            // mark beam peak intensity
+            int xPosHotPixel = (int)Math.Round((float)_beamPeakIntensity * corr);
             e.Graphics.DrawLine(Pens.Black, new Point(xPosHotPixel, 0), new Point(xPosHotPixel, 24));
+            // draw scale markers
             byte[] scale = new byte[] {0, 50, 100, 150, 200, 250};
             int xPos;
             for ( int i = 0; i < 6; i++ ) {
@@ -2734,7 +3002,6 @@ namespace GrzBeamProfiler
         // access app settings
         private void buttonSettings_Click(object sender, EventArgs e)
         {
-            _paintBusy = true;
             // transfer current app settings to _settings class
             updateSettingsFromApp();
             // start settings dialog
@@ -2742,7 +3009,6 @@ namespace GrzBeamProfiler
             // memorize settings
             AppSettings oldSettings = new AppSettings();
             AppSettings.CopyAllTo(_settings, out oldSettings);
-            _paintBusy = false;
             if ( dlg.ShowDialog() == DialogResult.OK ) {
                 // update app settings
                 updateAppFromSettings();
@@ -2756,19 +3022,15 @@ namespace GrzBeamProfiler
         // change camera model
         private void devicesCombo_Click(object sender, EventArgs e)
         {
-            // if camera model changes, the following settings are likely wrong - therefore better reset them
+            // if camera model changes, therefore better reset
             _settings.BeamSearchOrigin = AppSettings.BeamSearchStates.CENTER;
-            _bmpBkgnd = new byte[0];
-            _bmpBkgnd = null;
         }
 
         // change camera resolution
         private void videoResolutionsCombo_Click(object sender, EventArgs e)
         {
-            // if camera resolution changes, the following settings are likely wrong - therefore better reset them
+            // if camera resolution changes, better reset
             _settings.BeamSearchOrigin = AppSettings.BeamSearchStates.CENTER;
-            _bmpBkgnd = new byte[0];
-            _bmpBkgnd = null;
         }
 
         // app acts as a server providing screenshots via TCP/IP socket connection
@@ -2815,30 +3077,32 @@ namespace GrzBeamProfiler
         // capture a background image, useful only w/o beam :)
         private void buttonCaptureBackground_Click(object sender, EventArgs e)
         {
-            if ( _settings.SubtractBackgroundImage ) {
-                if ( MessageBox.Show(
-                                "Turn beam providing source off.\n\n" +
-                                "Make sure Settings --> 'Subtract Backround Image' = False.\nOtherwise results become unpredictable.\n\n" +
-                                "Continue anyway?", 
-                                "Capture a Background Image", 
-                                MessageBoxButtons.OKCancel) != DialogResult.OK ) {
-                    return;
-                }
+            if ( MessageBox.Show(
+                            "Turn beam providing source off.\n\n" +
+                            "Click 'beam appearance', then 'native image'.\n\n" +
+                            "Make sure Settings --> 'Subtract Backround Image' = False.\nOtherwise results become unpredictable.\n\n" +
+                            "An already existing Background Image will be overridden.\n\n" +
+                            "Continue?",
+                            "Capture a Background Image",
+                            MessageBoxButtons.OKCancel) != DialogResult.OK ) {
+                return;
             }
-            if ( _bmpArr != null && _bmpArr.Length > 0 ) {
-                if ( _videoDevice != null  && _videoDevice.IsRunning ) {
-                    // disconnect means stop video device
-                    if ( _videoDevice.IsRunning ) {
-                        _videoDevice.NewFrame -= new AForge.Video.NewFrameEventHandler(videoDevice_NewFrame);
-                        _videoDevice.SignalToStop();
-                        _fps = 0;
+
+            if ( _bmp != null ) {
+                try {
+                    if ( _bmpBkgnd != null ) {
+                        _bmpBkgnd.Dispose();
                     }
-                    // some controls
-                    EnableConnectionControls(true);
+                    System.IO.File.Delete(@"BackGroundImage.bmp");
+                    _bmpBkgnd = new Bitmap((Bitmap)_bmp.Clone());
+                    if ( _bmpBkgnd.PixelFormat != PixelFormat.Format24bppRgb ) {
+                        _bmpBkgnd = GrzTools.BitmapTools.ConvertTo24bpp(_bmpBkgnd);
+                    }
+                    _bmpBkgnd.Save("BackGroundImage.bmp", ImageFormat.Bmp);
+                    MessageBox.Show("'BackGroundImage.bmp' was saved", "Background Image");
+                } catch ( Exception ) {
+                    MessageBox.Show("'BackGroundImage.bmp' could not be saved saved.\n\nRetry after manual deletion.", "Background Image save error");
                 }
-                _bmpBkgnd = new byte[_bmpArr.Length];
-                Array.Copy(_bmpArr, _bmpBkgnd, _bmpArr.Length);
-                System.IO.File.WriteAllBytes("BackGroundImage.bin", _bmpBkgnd);
             } else {
                 MessageBox.Show("No image available. Please connect to camera.", "Capture Background Image");
             }
@@ -2979,9 +3243,9 @@ namespace ReceiveSocketImage
 
         // beam diameter algorithm
         public enum BeamDiameter {
-            FWHM = 0,
-            ReverseEulerSquare = 1,
-            D86 = 2
+            FWHM = 0,                 // FWHM:    beam width at 50% (-3 dB) of beam's peak irradiance [W / m2] 
+            D4SIGMA = 1,              // D4SIGMA: beam width at 4 SIGMA of beam's power standard deviation
+            D86 = 2                   // D86:     beam width at 86,5% of beam's total power, aka TEM 00 Gaussian beam’s 1/e 2 value (13.5%) [W / m2] 
         }
 
         // custom form to show the source code sample 'receive network socket bmp' inside the property grid
@@ -3027,6 +3291,29 @@ namespace ReceiveSocketImage
             }
         }
 
+        [Browsable(false)]
+        public bool FollowBeam { get; set; }
+        [Browsable(false)]
+        public bool Crosshair { get; set; }
+        [Browsable(false)]
+        public bool ForceGray { get; set; }
+        [Browsable(false)]
+        public bool PseudoColors { get; set; }
+        [Browsable(false)]
+        public bool Ellipse { get; set; }
+        [Browsable(false)]
+        public bool BeamBorder { get; set; }
+        [Browsable(false)]
+        public bool BeamPeak { get; set; }
+        [Browsable(false)]
+        public bool SearchTraces { get; set; }
+        [Browsable(false)]
+        public bool EllipsePower { get; set; }
+        [Browsable(false)]
+        public bool EllipsePointsHull { get; set; }
+        [Browsable(false)]
+        public bool SwapProfiles { get; set; }
+
         [ReadOnly(true)]
         public string CameraMoniker { get; set; }
         [ReadOnly(true)]
@@ -3048,14 +3335,12 @@ namespace ReceiveSocketImage
         [ReadOnly(true)]
         public Point FormLocation { get; set; }
         [ReadOnly(false)]
-        [Description("Minimum pixel power level indicating a beam")]
-        public int BeamPowerThreshold { get; set; }
+        [Description("Minimum pixel intensity level indicating a beam")]
+        public int BeamIntensityThreshold { get; set; }
         [Description("Minimum required beam diameter in pixels, lower limit is 4")]
         public int BeamMinimumDiameter { get; set; }
-        public BeamDiameter BeamDiameterType { get; set; }
         [Description("Beam diameter calculation type - determines power reduction")]
-        public bool ForceGray { get; set; }
-        public bool PseudoColors { get; set; }
+        public BeamDiameter BeamDiameterType { get; set; }
         [Description("Styles temperature vs. rainbow")]
         public ColorTable PseudoColorTable { get; set; }
         [ReadOnly(false)]
@@ -3070,10 +3355,6 @@ namespace ReceiveSocketImage
         [Description("See sample application source code to connect to screenshot server")]
         [Editor(typeof(TextEditor), typeof(System.Drawing.Design.UITypeEditor))]
         public String SampleSocketSource { get; set; }
-        [Description("INFO: show 2nd Ulam spiral result instead of blob border")]
-        public bool DebugUlamSpiral { get; set; }
-        [Description("INFO: show both Ulam search traces; needs DebugUlamSpiral = True")]
-        public bool DebugSearchTrace { get; set; }
 
         // INI: read from ini
         public void ReadFromIni() {
@@ -3143,10 +3424,26 @@ namespace ReceiveSocketImage
             // pseudo colors on/off + scrollers
             if ( bool.TryParse(ini.IniReadValue(iniSection, "PseudoColors", "false"), out check) ) {
                 PseudoColors = check;
+                if ( ForceGray ) {
+                    PseudoColors = false;
+                }
             }
+            // swap profile sections
+            if ( bool.TryParse(ini.IniReadValue(iniSection, "SwapProfiles", "false"), out check) ) {
+                SwapProfiles = check;
+            }
+            // show beam render options
+            FollowBeam = true;
+            Crosshair = true;
+            Ellipse = true;
+            BeamBorder = true;
+            BeamPeak = true;
+            SearchTraces = false;
+            EllipsePower = false;
+            EllipsePointsHull = false;
             // brightness threshold
-            if ( int.TryParse(ini.IniReadValue(iniSection, "BeamPowerThreshold", "50"), out tmp) ) {
-                BeamPowerThreshold = tmp;
+            if ( int.TryParse(ini.IniReadValue(iniSection, "BeamIntensityThreshold", "50"), out tmp) ) {
+                BeamIntensityThreshold = tmp;
             }
             // pseudo color table
             str = ini.IniReadValue(iniSection, "PseudoColorTable", "empty");
@@ -3175,14 +3472,6 @@ namespace ReceiveSocketImage
             // minimal required beam diameter
             if ( int.TryParse(ini.IniReadValue(iniSection, "BeamMinimumDiameter", "10"), out tmp) ) {
                 BeamMinimumDiameter = tmp;
-            }
-            // blob: show search traces
-            if ( bool.TryParse(ini.IniReadValue(iniSection, "DebugSearchTrace", "false"), out check) ) {
-                DebugSearchTrace = check;
-            }
-            // blob: Ulam vs. Polygon
-            if ( bool.TryParse(ini.IniReadValue(iniSection, "DebugUlamSpiral", "false"), out check) ) {
-                DebugUlamSpiral = check;
             }
             // center image offset
             str = ini.IniReadValue(iniSection, "BeamSearchOffset", "{X=0,Y=0}");
@@ -3228,8 +3517,10 @@ namespace ReceiveSocketImage
             ini.IniWriteValue(iniSection, "ForceGray", ForceGray.ToString());
             // pseudo colors
             ini.IniWriteValue(iniSection, "PseudoColors", PseudoColors.ToString());
+            // swap profile sections
+            ini.IniWriteValue(iniSection, "SwapProfiles", SwapProfiles.ToString());
             // brightness threshold
-            ini.IniWriteValue(iniSection, "BeamPowerThreshold", BeamPowerThreshold.ToString());
+            ini.IniWriteValue(iniSection, "BeamIntensityThreshold", BeamIntensityThreshold.ToString());
             // pseudo color table 
             ini.IniWriteValue(iniSection, "PseudoColorTable", PseudoColorTable.ToString());
             // beam diameter type 
@@ -3238,10 +3529,6 @@ namespace ReceiveSocketImage
             ini.IniWriteValue(iniSection, "SubtractBackgroundImage", SubtractBackgroundImage.ToString());
             // minimal required blob diameter
             ini.IniWriteValue(iniSection, "BeamMinimumDiameter", BeamMinimumDiameter.ToString());
-            // blob: Ulam vs. Polygon
-            ini.IniWriteValue(iniSection, "DebugUlamSpiral", DebugUlamSpiral.ToString());
-            // blob: show search traces
-            ini.IniWriteValue(iniSection, "DebugSearchTrace", DebugSearchTrace.ToString());
             // center image offset
             ini.IniWriteValue(iniSection, "BeamSearchOffset", BeamSearchOffset.ToString());
             // socket screenshots

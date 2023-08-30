@@ -51,6 +51,8 @@ namespace GrzBeamProfiler
 
         private void saveButton_Click(object sender, EventArgs e)
         {
+            saveFileDialog.InitialDirectory = Application.StartupPath;
+            saveFileDialog.FileName = "BeamProfile_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture);
             if ( saveFileDialog.ShowDialog() == DialogResult.OK ) {
                 string ext = Path.GetExtension(saveFileDialog.FileName).ToLower();
                 ImageFormat format = ImageFormat.Jpeg;

@@ -129,27 +129,139 @@ namespace GrzTools
         }
     }
 
+    // Point related tools
+    class PointTools 
+    {
+        // returns if a point is inside a given convex hull polygon
+        static bool IsPointInPolygon(Point p, Point[] polygon) {
+            double minX = polygon[0].X;
+            double maxX = polygon[0].X;
+            double minY = polygon[0].Y;
+            double maxY = polygon[0].Y;
+            for ( int i = 1; i < polygon.Length; i++ ) {
+                Point q = polygon[i];
+                minX = Math.Min(q.X, minX);
+                maxX = Math.Max(q.X, maxX);
+                minY = Math.Min(q.Y, minY);
+                maxY = Math.Max(q.Y, maxY);
+            }
+            if ( p.X < minX || p.X > maxX || p.Y < minY || p.Y > maxY ) {
+                return false;
+            }
+            bool inside = false;
+            for ( int i = 0, j = polygon.Length - 1; i < polygon.Length; j = i++ ) {
+                if ( (polygon[i].Y > p.Y) != (polygon[j].Y > p.Y) &&
+                     p.X < (polygon[j].X - polygon[i].X) * (p.Y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X ) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        // cartesian distance between two points
+        public static int GetDistance(PointF pt1, PointF pt2) {
+            return (int)Math.Sqrt((pt1.X - pt2.X) * (pt1.X - pt2.X) + (pt1.Y - pt2.Y) * (pt1.Y - pt2.Y));
+        }
+    }
+
     // Bitmap related tools
     class BitmapTools
     {
-        // convert a 24 bpp Bitmap to a 3 bytes per pixel array
-        public static byte[] Bitmap24bppToByteArray( Bitmap sourceBitmap )
-        {
-            BitmapData sourceData = sourceBitmap.LockBits(new Rectangle(0, 0, sourceBitmap.Width, sourceBitmap.Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-            byte[] pixelBuffer = new byte[sourceData.Stride * sourceData.Height];
-            Marshal.Copy(sourceData.Scan0, pixelBuffer, 0, pixelBuffer.Length);
-            sourceBitmap.UnlockBits(sourceData);
-            return pixelBuffer;
+        // return a Bitmap 24bpp from an arbitrary Bitmap
+        public static Bitmap ConvertTo24bpp(Image img) {
+            var bmp = new Bitmap(img.Width, img.Height, PixelFormat.Format24bppRgb);
+            using ( var gr = Graphics.FromImage(bmp) ) {
+                gr.DrawImage(img, new Rectangle(0, 0, img.Width, img.Height));
+            }
+            return bmp;
         }
-        // convert a 3 bytes per pixel array to a 24 bpp Bitmap
-        public static Bitmap ByteArrayToBitmap( int width, int height, byte[] pixelBuffer )
+
+        // make inplace 24bpp bitmap pixel by pixel subtraction of two 24 bpp bitmaps 
+        public static unsafe void SubtractBitmap24bppToBitmap24bpp(ref Bitmap bmp, Bitmap subBmp) 
         {
-            var resultBitmap = new Bitmap(width, height);
-            BitmapData resultData = resultBitmap.LockBits(new Rectangle(0, 0, resultBitmap.Width, resultBitmap.Height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb/* .Format32bppArgb*/);
-            Marshal.Copy(pixelBuffer, 0, resultData.Scan0, pixelBuffer.Length);
-            resultBitmap.UnlockBits(resultData);
-            pixelBuffer = null;
-            return resultBitmap;
+            // sanity check
+            if ( bmp.Size != subBmp.Size ) {
+                return;
+            }
+            // lock bitmaps
+            BitmapData bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            byte* bmpScan0 = (byte*)bmpData.Scan0.ToPointer();
+            BitmapData subBmpData = subBmp.LockBits(new Rectangle(0, 0, subBmp.Width, subBmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            byte* subScan0 = (byte*)subBmpData.Scan0.ToPointer();
+            // get bmp length
+            int bmpLen = bmpData.Stride * bmp.Height;
+            // loop over bmp length
+            for ( int i = 0; i < bmpLen; i += 3 ) {
+                // write subtraction back to minuend
+                bmpScan0[i + 0] = (byte)Math.Abs(bmpScan0[i + 0] - subScan0[i + 0]);
+                bmpScan0[i + 1] = (byte)Math.Abs(bmpScan0[i + 1] - subScan0[i + 1]);
+                bmpScan0[i + 2] = (byte)Math.Abs(bmpScan0[i + 2] - subScan0[i + 2]);
+            }
+            // unlock bitmaps
+            bmp.UnlockBits(bmpData);
+            subBmp.UnlockBits(subBmpData);
+        }
+
+        // make inplace a Bitmap 24bpp gray from a Bitmap 24bpp color INLINE byte array 8bpp
+        public static unsafe void Bmp24bppColorToBmp24bppGrayToArray8bppGray(ref Bitmap bmp, ref byte[] bmpArr) {
+            int bmpArrNdx = 0;
+            // lock 
+            BitmapData bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            byte* scan0 = (byte*)bmpData.Scan0.ToPointer();
+            // loop bmp length
+            int bmpLen = bmpData.Stride * bmp.Height;
+            for ( int i = 0; i < bmpLen; i += 3 ) {
+                // make gray
+                byte gray = (byte)(0.2f * scan0[i + 0] + 0.6f * scan0[i + 1] + 0.2f * scan0[i + 2] + 0.5f);
+                // write gray to bmpArr
+                bmpArr[bmpArrNdx++] = gray;
+                // write to back
+                scan0[i + 0] = gray;
+                scan0[i + 1] = gray;
+                scan0[i + 2] = gray;
+            }
+            // unlock
+            bmp.UnlockBits(bmpData);
+        }
+
+        // make inplace byte array 8bpp gray from a Bitmap 24bpp color
+        public static unsafe void Bmp24bppColorToArray8bppGray(Bitmap bmp, ref byte[] bmpArr ) {
+            int bmpArrNdx = 0;
+            // lock 
+            BitmapData bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            byte* scan0 = (byte*)bmpData.Scan0.ToPointer();
+            // loop bmp length
+            int bmpLen = bmpData.Stride * bmp.Height;
+            for ( int i = 0; i < bmpLen; i += 3 ) {
+                // make gray out of 3 pixels
+                byte gray = (byte)(0.2f * scan0[i + 0] + 0.6f * scan0[i + 1] + 0.2f * scan0[i + 2] + 0.5f);
+                // write gray to outArray
+                bmpArr[bmpArrNdx++] = gray;
+            }
+            // unlock
+            bmp.UnlockBits(bmpData);
+        }
+
+        // make inplace a Bitmap 24bpp pseudo color from a Bitmap 24bpp color and INLINE byte array 8 bpp gray 
+        public static unsafe void Bmp24bppColorToBmp24bppPseudoToArray8bppGray(ref Bitmap bmp, GrzBeamProfiler.MainForm.palette pal, ref byte[] bmpArr) {
+            int bmpArrNdx = 0;
+            // lock bitmap 
+            BitmapData bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            byte* scan0 = (byte*)bmpData.Scan0.ToPointer();
+            // loop bmp length
+            int bmpLen = bmpData.Stride * bmp.Height;
+            for ( int i = 0; i < bmpLen; i += 3 ) {
+                // get curent gray level
+                byte gray = (byte)(0.2f * scan0[i + 0] + 0.6f * scan0[i + 1] + 0.2f * scan0[i + 2] + 0.5f);
+                // write gray to bmpArr
+                bmpArr[bmpArrNdx++] = gray;
+                // write pseudo color data back to bmp
+                scan0[i + 0] = pal.mapB[gray];
+                scan0[i + 1] = pal.mapG[gray];
+                scan0[i + 2] = pal.mapR[gray];
+            }
+            // unlock bitmap
+            bmp.UnlockBits(bmpData);
         }
     }
 
